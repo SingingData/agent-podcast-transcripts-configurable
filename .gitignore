@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+
+# Big folders - ignore entire directories
+audio/
+transcripts/
+logs/
+state/
+runtime-operations-config/
+monitoring/
+
+# Temp / backup files
+*.log
+*.backup
+agent_backup*.py
+
+# Other
+documentation/.DS_Store
+drawings/.DS_Store
+settings/.DS_Store
+transcripts/.DS_Store

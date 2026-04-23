@@ -1,0 +1,13 @@
+# Intro advertisement phrases to strip near the start of an episode.
+# One phrase per line. Case-insensitive matching.
+# These are only checked against early transcript segments.
+Today's show is brought to you by
+Today's animal spirits talk your book is brought to you by 
+This episode is sponsored by
+Brought to you by
+Support for this podcast comes from
+Our sponsors
+We'll be right back
+Whoa, whoa, whoa. Stop the clock. Here's a word from our sponsor.
+Advertisement
+Ad break

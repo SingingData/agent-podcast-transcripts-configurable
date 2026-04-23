@@ -1,0 +1,8 @@
+# Format:
+# Canonical Name | misspelling 1, misspelling 2, misspelling 3
+# Case-insensitive match on misspellings; replace with canonical spelling.
+
+Michael Batnick | Michael Batnik
+Ritholtz Wealth Management | Redholtz Wealth Management
+teucrium.com | Tukrem.com
+Teucrium | Tokram, Tukrim

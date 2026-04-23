@@ -1,0 +1,12 @@
+# Closing advertisement phrases that signal the ad is ending and the podcast is about to begin.
+# One phrase per line. Case-insensitive matching.
+Bloomberg Audio Studios, podcasts, radio, news
+Let’s get to the show
+Terms and conditions apply.
+JP Morgan Chase and Company.
+ All investing is subject to risk.
+Vanguard Marketing Corporation, distributor.
+Let's create smart business. IBM.
+Visit janushenderson.com.
+Fidelity Brokerage Services LLC, member NYSE, SIPC.
+Learn more at adobe.com/do-that-with-acrobat.

@@ -1,0 +1,58 @@
+{
+  "animal_spirits_intro_with_ad": {
+    "podcast_name": "Animal Spirits",
+    "episode_title": "Howard Marks joins Animal Spirits",
+    "episode_summary": "Today we talk with Howard Marks about markets.",
+    "segments": [
+      {
+        "speaker": "SPEAKER_99",
+        "start": 0,
+        "end": 8,
+        "text": "This episode is sponsored by Example Sponsor with a message about financial tools."
+      },
+      {
+        "speaker": "SPEAKER_00",
+        "start": 12,
+        "end": 19,
+        "text": "Ladies and Gentlemen, Welcome to Animal Spirits, I'm Ben Carlson."
+      },
+      {
+        "speaker": "SPEAKER_01",
+        "start": 19,
+        "end": 24,
+        "text": "And I'm Michael Batnick."
+      },
+      {
+        "speaker": "SPEAKER_00",
+        "start": 24,
+        "end": 32,
+        "text": "Today we are joined by Howard Marks to talk about markets."
+      }
+    ]
+  },
+  "compound_intro_no_ad": {
+    "podcast_name": "The Compound and Friends",
+    "episode_title": "Tom Lee joins The Compound and Friends",
+    "episode_summary": "Josh Brown and Michael Batnick welcome Tom Lee.",
+    "segments": [
+      {
+        "speaker": "SPEAKER_00",
+        "start": 0,
+        "end": 7,
+        "text": "Welcome to The Compound and Friends, I'm Josh Brown."
+      },
+      {
+        "speaker": "SPEAKER_01",
+        "start": 7,
+        "end": 11,
+        "text": "And I'm Michael Batnick."
+      },
+      {
+        "speaker": "SPEAKER_02",
+        "start": 11,
+        "end": 18,
+        "text": "Thanks for having me, great to be here."
+      }
+    ]
+  }
+}

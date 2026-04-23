@@ -1,0 +1,16 @@
+# Opening catch phrases that often mark the start of the actual podcast intro.
+# One phrase per line. Case-insensitive matching.
+Welcome to Animal Spirits with Michael and Ben
+Welcome to Animal Spirits
+Ladies and gentlemen, welcome to what are your thoughts
+Ladies and gentlemen, welcome to "What Are Your Thoughts?" 
+Welcome to another edition of what are your thoughts
+Welcome to What are your thoughts
+Ladies and Gentlemen, Welcome
+Welcome to Ask the Compound 
+Welcome back. This is Ask the Compound, the show where you ask and we answer.
+Welcome back. This is Ask the Compound, 
+Welcome. This is Ask the Compound
+All right, we are back.
+This is Masters in Business with Barry Ritholtz
+

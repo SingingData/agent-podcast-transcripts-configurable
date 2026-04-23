@@ -1,0 +1,15 @@
+# Known hosts per podcast
+# Format:
+# Podcast Name | Host 1, Host 2, Host 3
+#
+# Notes:
+# - One podcast per line
+# - Keep the podcast name exactly as used elsewhere in the agent
+# - Separate multiple hosts with commas
+# - Blank lines and lines starting with # are ignored
+
+Animal Spirits | Ben Carlson, Michael Batnick
+The Compound and Friends | Josh Brown, Michael Batnick
+Ask the Compound | Ben Carlson, Duncan Hill
+Masters in Business | Barry Ritholtz
+At the Money | Barry Ritholtz

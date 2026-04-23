@@ -1,0 +1,125 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2868
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\margl1440\margr1440\vieww39200\viewh23220\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 Custom Diarization:\
+\
+I\'92d do it as a separate local pipeline after transcription.\
+\
+High-level flow\
+1. transcribe with WhisperX as you already do\
+2. split audio into candidate speech chunks\
+3. compute speaker embeddings for those chunks\
+4. cluster embeddings into speaker groups\
+5. assign each transcript segment to the nearest/overlapping cluster\
+6. write a separate diarized transcript/report\
+\
+Concretely, the pipeline would look like this:\
+\
+## 1. Keep your current transcription pipeline\
+Use your existing:\
+- WhisperX transcription\
+- alignment\
+- cleaned transcript flow\
+\
+Don\'92t replace that part.\
+\
+## 2. Add a local diarization module\
+Create a separate module, something like:\
+- `diarization_local.py`\
+\
+Its job:\
+- take local audio file\
+- return speaker-labeled time intervals\
+\
+## 3. Segment the audio\
+You need chunks of speech to compare.\
+\
+Two common ways:\
+- use Whisper/WhisperX aligned transcript segments as the chunk boundaries\
+- or use a VAD/speech segmentation tool first\
+\
+For your case, easiest is:\
+- start from WhisperX aligned segments\
+\
+That gives each chunk:\
+- start time\
+- end time\
+- transcript text\
+\
+## 4. Extract speaker embeddings\
+For each chunk:\
+- load the corresponding audio slice\
+- run a SpeechBrain speaker embedding model\
+- get a vector representing the speaker\'92s voice\
+\
+So each chunk becomes:\
+- `(start, end, text, embedding_vector)`\
+\
+## 5. Cluster the embeddings\
+Then cluster the vectors into speaker groups:\
+- Speaker A\
+- Speaker B\
+- Speaker C\
+\
+Typical clustering approaches:\
+- agglomerative clustering\
+- spectral clustering\
+- constrained clustering if you want min/max speakers\
+\
+At first, keep it simple:\
+- agglomerative clustering\
+- optional `min_speakers` / `max_speakers`\
+\
+## 6. Map clusters back to transcript segments\
+Now assign each transcript segment:\
+- `speaker_0`\
+- `speaker_1`\
+- etc.\
+\
+Then optionally apply your existing host-name heuristics:\
+- known hosts per podcast\
+- intro phrase detection\
+- guest extraction\
+\
+That way:\
+- cluster labels become real names where possible\
+\
+## 7. Produce separate output\
+Write:\
+- a diarized transcript text file\
+- maybe also a CSV/JSON artifact\
+\
+For example:\
+- `transcripts/<safe-title>.diarization.txt`\
+- `transcripts/<safe-title>.diarization.csv`\
+\
+## Why this is less painful than NeMo\
+Because you can bolt it onto your current system:\
+- reuse transcript segments\
+- reuse your naming heuristics\
+- add one local embedding+clustering step\
+\
+Instead of adopting a much larger end-to-end stack.\
+\
+## What \'93least engineering pain overall\'94 means\
+Even this is still custom work.\
+The truly easiest route is still:\
+- get access to the gated pyannote model\
+- keep using WhisperX\'92s built-in diarization path\
+\
+Because then you avoid:\
+- building your own segmentation+clustering glue\
+- tuning cluster behavior\
+- debugging speaker assignment quality\
+\
+So:\
+- **SpeechBrain local path** = more realistic than NeMo on your Mac\
+- **least engineering pain overall** = fix the pyannote access issue instead\
+\
+That\'92s the tradeoff.\
+\
+If you want, next I can sketch the exact files/functions I\'92d add to this project for a SpeechBrain-based local diarization attempt.}
