@@ -94,6 +94,47 @@ If you are not using conda, either:
 python3 agent.py
 ```
 
+## Running Agent in Test Mode
+
+Test mode is controlled in:
+
+- `settings/transcription-settings.txt`
+
+Relevant settings:
+
+```txt
+TEST_MODE=true
+TEST_MODE_EPISODE_COUNT=6
+```
+
+What test mode does:
+- processes only the most recent `TEST_MODE_EPISODE_COUNT` matching episodes instead of the normal selection flow
+- keeps intermediate transcript artifacts that are useful for inspection and debugging
+
+Intermediate artifacts written only in test mode:
+- `transcripts/raw_transcript_{safe_title}.txt`
+  - initial transcript text produced from transcription output
+- `transcripts/post_processed_{safe_title}.txt`
+  - transcript text after vocabulary correction, `PODCAST START` handling, clipping after the last marker, and paragraph cleanup
+- `transcripts/llm_cleaned_transcript_{safe_title}.txt`
+  - plain transcript text after the LLM cleanup pass (or fallback text if LLM cleanup is skipped/fails)
+
+Final deliverables written in all modes:
+- `transcripts/final_cleaned_{safe_title}.txt`
+- `transcripts/final_cleaned_{safe_title}.md`
+
+Recommended workflow:
+1. set `TEST_MODE=true`
+2. set `TEST_MODE_EPISODE_COUNT` to the number of recent episodes you want to inspect
+3. run `./run-agent.sh` or `python3 agent.py`
+4. review the intermediate files in `transcripts/`
+5. revert to normal mode when finished:
+
+```txt
+TEST_MODE=false
+TEST_MODE_EPISODE_COUNT=1
+```
+
 ## Running the monitor
 
 ```bash

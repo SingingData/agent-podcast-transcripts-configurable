@@ -1,4 +1,3 @@
-anthropic
 feedparser
 openai
 psutil

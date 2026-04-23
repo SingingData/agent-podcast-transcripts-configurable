@@ -89,7 +89,6 @@ def ensure_required_modules_installed():
         "torch": "torch",
         "whisperx": "whisperx",
         "openai": "openai",
-        "anthropic": "anthropic",
     }
 
     missing_packages = []
@@ -1382,7 +1381,7 @@ def transcribe_with_whisperx(audio_path, title, config, podcast_name=None, prelo
     import torch
     
     safe_title = make_safe_title(title, config)
-    txt_path = os.path.join(TRANSCRIPT_DIR, f"plain_transcript_{safe_title}.txt")
+    txt_path = os.path.join(TRANSCRIPT_DIR, f"raw_transcript_{safe_title}.txt")
     os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
     
     metrics = {
@@ -1518,9 +1517,10 @@ def transcribe_with_whisperx(audio_path, title, config, podcast_name=None, prelo
     metrics["chars"] = len(plain_text)
     metrics["words"] = len(plain_text.split())
     
-    # Save transcripts
-    with open(txt_path, "w") as f:
-        f.write(plain_text)
+    # Save raw transcript artifact only in test mode
+    if config.test_mode:
+        with open(txt_path, "w") as f:
+            f.write(plain_text)
     
     # Total transcription time
     t_total = t_model_load + t_transcribe + t_align
@@ -2031,8 +2031,9 @@ def main():
                 if marker_matches:
                     post_processed_text = marked_text[marker_matches[-1].end():].lstrip()
                 post_processed_txt_path = os.path.join(TRANSCRIPT_DIR, f"post_processed_{safe_title}.txt")
-                with open(post_processed_txt_path, "w", encoding="utf-8") as f:
-                    f.write(post_processed_text)
+                if config.test_mode:
+                    with open(post_processed_txt_path, "w", encoding="utf-8") as f:
+                        f.write(post_processed_text)
 
                 # ── Phase 5: LLM Cleanup ──────────────────────────────────────
                 t_llm_start = time.time()
@@ -2042,10 +2043,12 @@ def main():
                 log_resources("LLM Cleanup")
 
                 # Save primary cleaned transcript
-                plain_transcript_path = os.path.join(TRANSCRIPT_DIR, f"plain_transcript_{safe_title}.txt")
-                cleaned_txt_path  = os.path.join(TRANSCRIPT_DIR, f"cleaned_{safe_title}.txt")
-                with open(plain_transcript_path, "w", encoding="utf-8") as f:
-                    f.write(plain_transcript_text)
+                plain_transcript_path = os.path.join(TRANSCRIPT_DIR, f"llm_cleaned_transcript_{safe_title}.txt")
+                cleaned_txt_path  = os.path.join(TRANSCRIPT_DIR, f"final_cleaned_{safe_title}.txt")
+                cleaned_md_path   = os.path.join(TRANSCRIPT_DIR, f"final_cleaned_{safe_title}.md")
+                if config.test_mode:
+                    with open(plain_transcript_path, "w", encoding="utf-8") as f:
+                        f.write(plain_transcript_text)
 
                 inferred_speakers = infer_speaker_list(
                     ep.get("podcast", ""),
@@ -2055,6 +2058,8 @@ def main():
                 )
                 cleaned_text = build_markdown_transcript(ep, plain_transcript_text, inferred_speakers)
                 with open(cleaned_txt_path, "w", encoding="utf-8") as f:
+                    f.write(cleaned_text)
+                with open(cleaned_md_path, "w", encoding="utf-8") as f:
                     f.write(cleaned_text)
 
                 # ── Phase 6: Email ────────────────────────────────────────────
