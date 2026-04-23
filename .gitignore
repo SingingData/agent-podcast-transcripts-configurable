@@ -42,3 +42,6 @@ transcripts/.DS_Store
 
 # Keep example env in git
 !.env.example
+
+!runtime-operations-config/
+!runtime-operations-config/runtime-config.txt
