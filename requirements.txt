@@ -1,0 +1,8 @@
+anthropic
+feedparser
+openai
+psutil
+python-dotenv
+requests
+torch
+whisperx

@@ -9,5 +9,6 @@ while IFS='=' read -r key value; do
   export "$key=$value"
 done < "$CONFIG_FILE"
 
+WORKDIR="${WORKDIR:-$BASE_DIR}"
 cd "$WORKDIR"
 exec "$CONDA_BIN" run -n "$CONDA_ENV" python "$BASE_DIR/$PYTHON_ENTRY"

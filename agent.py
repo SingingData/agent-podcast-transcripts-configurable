@@ -80,6 +80,40 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
+def ensure_required_modules_installed():
+    required_modules = {
+        "requests": "requests",
+        "feedparser": "feedparser",
+        "psutil": "psutil",
+        "dotenv": "python-dotenv",
+        "torch": "torch",
+        "whisperx": "whisperx",
+        "openai": "openai",
+        "anthropic": "anthropic",
+    }
+
+    missing_packages = []
+    for module_name, package_name in required_modules.items():
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing_packages.append(package_name)
+
+    if missing_packages:
+        unique_packages = sorted(set(missing_packages))
+        packages_text = ", ".join(unique_packages)
+        raise RuntimeError(
+            "Missing required Python packages: "
+            f"{packages_text}. "
+            "Install them explicitly before running the agent, e.g. "
+            "`python3 -m pip install -r requirements.txt` "
+            "or use your preferred managed environment setup."
+        )
+
+
+ensure_required_modules_installed()
+
+
 def load_key_value_settings(path):
     settings = {}
     with open(path, "r", encoding="utf-8") as f:

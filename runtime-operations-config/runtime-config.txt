@@ -1,6 +1,8 @@
 # Runtime / launcher settings
-CONDA_BIN=/opt/homebrew/bin/conda
+# Set only the pieces that differ on your machine.
+# The launcher scripts derive BASE_DIR and WORKDIR automatically.
+
+CONDA_BIN=conda
 CONDA_ENV=fastai
 PYTHON_ENTRY=agent.py
 MONITOR_ENTRY=monitoring/monitor.py
-WORKDIR=/Users/pattyry/.openclaw/workspace/agent-podcast-transcripts-configurable
