@@ -1,0 +1,6 @@
+# Runtime / launcher settings
+CONDA_BIN=/opt/homebrew/bin/conda
+CONDA_ENV=fastai
+PYTHON_ENTRY=agent.py
+MONITOR_ENTRY=monitoring/monitor.py
+WORKDIR=/Users/pattyry/.openclaw/workspace/agent-podcast-transcripts-configurable

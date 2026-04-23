@@ -26,3 +26,19 @@ documentation/.DS_Store
 drawings/.DS_Store
 settings/.DS_Store
 transcripts/.DS_Store
+
+# Local secrets
+.env
+.env.local
+.env.*.local
+
+# Keep runtime bootstrap config in git
+!runtime-operations-config/
+!runtime-operations-config/runtime-config.txt
+
+# Keep dependency manifests in git
+!requirements.txt
+!environment.yml
+
+# Keep example env in git
+!.env.example
