@@ -1,7 +1,11 @@
 # agent-podcast-transcripts-configurable
 
-Configurable podcast transcription agent for Compound / Bloomberg shows.
-It transcribes selected podcast episodes with WhisperX, applies deterministic cleanup steps, runs an optional LLM cleanup pass, and emails finished transcripts.
+Configurable podcast transcription agent for Compound shows.
+This agent transcribes selected podcast episodes with WhisperX, applies deterministic cleanup steps, runs an optional LLM cleanup pass, and emails finished transcripts.
+
+This agent is written to run locally on a CPU and with minimal token expense.  Note, it can be further configured to run the LLM clean-up lcoally and to add a diarization step to identify the speakers in-line.  
+
+To run locally, you need to install the requirements listed below.  Note, I recommend installing from miniconda, and further install the fastai module (in a virtual environment in python if you can) to get most of yoru requirements loaded in one throw.  
 
 ## What you need before running
 
