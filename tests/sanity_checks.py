@@ -6,6 +6,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SETTINGS_DIR = BASE_DIR / "settings"
+PHRASES_DIR = BASE_DIR / 'phrases-and-vocabulary'
 FIXTURES_FILE = Path(__file__).resolve().parent / "sample_segments.json"
 AGENT_FILE = BASE_DIR / "agent.py"
 
@@ -64,10 +65,9 @@ def load_agent_helpers():
     ns = {}
     exec(compile(subset, str(AGENT_FILE), 'exec'), ns)
     ns['SETTINGS_DIR'] = str(SETTINGS_DIR)
-    phrases_dir = SETTINGS_DIR / 'phrases-and-vocabulary'
-    ns['KNOWN_HOSTS_FILE'] = str(phrases_dir / 'known-hosts-per-podcast.txt')
-    ns['OPENING_CATCH_PHRASES_FILE'] = str(phrases_dir / 'opening-catch-phrases.txt')
-    ns['OPENING_AD_PHRASES_FILE'] = str(phrases_dir / 'opening-ad-phrases.txt')
+    ns['KNOWN_HOSTS_FILE'] = str(PHRASES_DIR / 'known-hosts-per-podcast.txt')
+    ns['OPENING_CATCH_PHRASES_FILE'] = str(PHRASES_DIR / 'opening-catch-phrases.txt')
+    ns['OPENING_AD_PHRASES_FILE'] = str(PHRASES_DIR / 'opening-ad-phrases.txt')
     ns['OPENING_CATCH_PHRASES'] = ns['load_phrase_list'](ns['OPENING_CATCH_PHRASES_FILE'])
     ns['OPENING_AD_PHRASES'] = ns['load_phrase_list'](ns['OPENING_AD_PHRASES_FILE'])
     ns['log'] = TestLog()
@@ -86,9 +86,9 @@ def run():
     fixtures = json.loads(FIXTURES_FILE.read_text(encoding='utf-8'))
 
     required_files = [
-        SETTINGS_DIR / 'phrases-and-vocabulary' / 'known-hosts-per-podcast.txt',
-        SETTINGS_DIR / 'phrases-and-vocabulary' / 'opening-catch-phrases.txt',
-        SETTINGS_DIR / 'phrases-and-vocabulary' / 'opening-ad-phrases.txt',
+        PHRASES_DIR / 'known-hosts-per-podcast.txt',
+        PHRASES_DIR / 'opening-catch-phrases.txt',
+        PHRASES_DIR / 'opening-ad-phrases.txt',
         SETTINGS_DIR / 'service-endpoints.txt',
     ]
     for path in required_files:

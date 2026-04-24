@@ -56,7 +56,7 @@ STATE_FILE = os.path.join(STATE_DIR, "state.json")
 STATE_BACKUP = os.path.join(STATE_DIR, "state.backup.json")
 LOG_FILE = os.path.join(LOGS_DIR, "agent.log")
 ENV_FILE = os.path.join(os.path.dirname(BASE_DIR), ".env")
-PHRASES_AND_VOCAB_DIR = os.path.join(SETTINGS_DIR, "phrases-and-vocabulary")
+PHRASES_AND_VOCAB_DIR = os.path.join(BASE_DIR, "phrases-and-vocabulary")
 KNOWN_HOSTS_FILE = os.path.join(PHRASES_AND_VOCAB_DIR, "known-hosts-per-podcast.txt")
 PODCAST_FEEDS_FILE = os.path.join(SETTINGS_DIR, "podcast_feeds.txt")
 TRANSCRIPTION_SETTINGS_FILE = os.path.join(SETTINGS_DIR, "transcription-settings.txt")
@@ -1415,7 +1415,7 @@ def transcribe_with_whisperx(audio_path, title, config, podcast_name=None, prelo
                               shared_resources=None, episode_title="", episode_summary=""):
     """
     Transcribe audio using WhisperX.
-    Uses known hosts from settings/phrases-and-vocabulary/known-hosts-per-podcast.txt for optional speaker naming.
+    Uses known hosts from phrases-and-vocabulary/known-hosts-per-podcast.txt for optional speaker naming.
     Returns detailed timing and resource metrics for transcription/alignment only.
     
     Args:

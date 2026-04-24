@@ -22,7 +22,7 @@ monitoring/
 agent_backup*.py
 
 # Other
-documentation/.DS_Store
+future-features/.DS_Store
 drawings/.DS_Store
 settings/.DS_Store
 transcripts/.DS_Store

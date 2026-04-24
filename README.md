@@ -23,7 +23,7 @@ To run locally, you need to install the requirements listed below. Note that if 
 - `run-monitor.sh` — wrapper to run the monitor
 - `runtime-operations-config/runtime-config.txt` — launcher settings
 - `settings/` — editable runtime settings
-- `settings/phrases-and-vocabulary/` — phrase lists, host names, and vocabulary corrections
+- `phrases-and-vocabulary/` — phrase lists, host names, and vocabulary corrections
 - `requirements.txt` — Python package dependencies
 - `.env.example` — environment variable template
 
@@ -281,7 +281,7 @@ Main runtime settings live in:
 - `settings/transcription-settings.txt`
 - `settings/podcast_feeds.txt`
 - `settings/service-endpoints.txt`
-- `settings/phrases-and-vocabulary/`
+- `phrases-and-vocabulary/`
 
 Notable configurable items include:
 - test mode and episode count
