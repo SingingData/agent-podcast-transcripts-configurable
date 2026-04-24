@@ -1962,8 +1962,9 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
         timeout_retry_used = False
         service_retry_used = False
         degenerate_retry_used = False
+        degenerate_backoff_retry_used = False
 
-        for attempt in (1, 2, 3, 4):
+        for attempt in (1, 2, 3, 4, 5):
             try:
                 cleaned, usage = run_cleanup_once()
                 degeneration_reason = analyze_degenerate_output(cleaned, usage)
@@ -1971,17 +1972,26 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
                     raise ValueError(f"LLM cleanup produced degenerate output: {degeneration_reason}")
                 break
             except Exception as e:
-                if (
-                    not degenerate_retry_used
-                    and str(e).startswith("LLM cleanup produced degenerate output:")
-                ):
-                    degenerate_retry_used = True
-                    log.warning(
-                        "LLM cleanup produced degenerate output; rerunning once before fallback. "
-                        f"[{e} | provider={config.llm_provider}, timeout={llm_timeout}s, "
-                        f"estimated_input_tokens={estimated_input_tokens}, max_output_tokens={max_output_tokens}]"
-                    )
-                    continue
+                if str(e).startswith("LLM cleanup produced degenerate output:"):
+                    if not degenerate_retry_used:
+                        degenerate_retry_used = True
+                        log.warning(
+                            "LLM cleanup produced degenerate output; rerunning once before fallback. "
+                            f"[{e} | provider={config.llm_provider}, timeout={llm_timeout}s, "
+                            f"estimated_input_tokens={estimated_input_tokens}, max_output_tokens={max_output_tokens}]"
+                        )
+                        continue
+
+                    if not degenerate_backoff_retry_used:
+                        degenerate_backoff_retry_used = True
+                        backoff_seconds = 3600
+                        log.warning(
+                            "LLM cleanup produced degenerate output again; waiting 1 hour before one final retry. "
+                            f"[{e} | provider={config.llm_provider}, backoff={backoff_seconds}s, timeout={llm_timeout}s, "
+                            f"estimated_input_tokens={estimated_input_tokens}, max_output_tokens={max_output_tokens}]"
+                        )
+                        time.sleep(backoff_seconds)
+                        continue
 
                 if not timeout_retry_used and is_timeout_error(e):
                     timeout_retry_used = True
