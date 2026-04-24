@@ -40,7 +40,7 @@ cd agent-podcast-transcripts-configurable
 This repo is set up to run through a Conda environment named `fastai`.
 Install Miniconda first, then create and populate that environment.
 
-#### macOS
+#### If you are running on macOS
 
 If you use Homebrew:
 
@@ -67,7 +67,7 @@ python -m pip install fastai
 python -m pip install -r requirements.txt
 ```
 
-#### Windows
+#### If you are running on Windows OS
 
 Download and install Miniconda from the official Miniconda installer page.
 During install, let Miniconda register its shell integration, then open an Anaconda Prompt.
