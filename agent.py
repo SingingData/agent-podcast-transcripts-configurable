@@ -151,23 +151,29 @@ def load_vocabulary_corrections(path):
 
     with open(path, "r", encoding="utf-8") as f:
         for line_number, line in enumerate(f, start=1):
-            raw_line = line.strip()
-            if not raw_line or raw_line.startswith("#"):
+            raw_line = line.rstrip("\n")
+            stripped_line = raw_line.strip()
+            if not stripped_line or stripped_line.startswith("#"):
                 continue
             if "|" not in raw_line:
-                log.warning(f"Skipping malformed vocabulary correction line {line_number}: {raw_line}")
+                log.warning(f"Skipping malformed vocabulary correction line {line_number}: {stripped_line}")
                 continue
 
             canonical, variants_text = raw_line.split("|", 1)
             canonical = canonical.strip()
             variants = [variant.strip() for variant in variants_text.split(",") if variant.strip()]
-            if not canonical or not variants:
-                log.warning(f"Skipping incomplete vocabulary correction line {line_number}: {raw_line}")
+            delete_match = variants_text.strip() == ""
+            if not canonical:
+                log.warning(f"Skipping incomplete vocabulary correction line {line_number}: {stripped_line}")
+                continue
+            if not variants and not delete_match:
+                log.warning(f"Skipping incomplete vocabulary correction line {line_number}: {stripped_line}")
                 continue
 
             corrections.append({
                 "canonical": canonical,
                 "variants": variants,
+                "delete_match": delete_match,
             })
     return corrections
 
@@ -181,6 +187,9 @@ def apply_vocabulary_corrections(text, corrections):
     ordered_pairs = []
     for entry in corrections:
         canonical = entry["canonical"]
+        if entry.get("delete_match"):
+            ordered_pairs.append((canonical, ""))
+            continue
         for variant in entry["variants"]:
             ordered_pairs.append((variant, canonical))
 
@@ -195,6 +204,9 @@ def apply_vocabulary_corrections(text, corrections):
                 "to": canonical,
                 "count": count,
             })
+
+    updated_text = re.sub(r"[ \t]{2,}", " ", updated_text)
+    updated_text = re.sub(r"\n{3,}", "\n\n", updated_text)
 
     return updated_text, replacements_applied
 
@@ -1842,8 +1854,8 @@ def build_final_text_transcript(episode, plain_text, speakers=None):
 
 
 
-def build_final_markdown_transcript(episode, plain_text, speakers=None, drawing_path=None):
-    """Render the final markdown transcript, optionally inserting a left-aligned drawing after the first paragraph."""
+def build_final_markdown_transcript(episode, plain_text, speakers=None):
+    """Render the final markdown transcript artifact without inline drawings."""
     chunks = chunk_paragraphs_for_markdown(plain_text, max_sentences=4)
 
     published_display = episode.get("published", "")
@@ -1868,19 +1880,12 @@ def build_final_markdown_transcript(episode, plain_text, speakers=None, drawing_
     ])
 
     body = []
-    inserted_drawing = False
     for chunk in chunks:
         if chunk.strip() == "PODCAST START":
             body.extend(["---", ""])
             continue
 
         body.extend([chunk, ""])
-        if drawing_path and not inserted_drawing:
-            body.extend([
-                f'<img src="{drawing_path}" alt="{episode["podcast"]} drawing" align="left" width="220" style="margin: 0 18px 10px 0; border-radius: 8px;" />',
-                "",
-            ])
-            inserted_drawing = True
 
     return "\n".join(header + body).strip() + "\n"
 
@@ -2240,13 +2245,11 @@ def main():
                     episode_summary=ep.get("summary", ""),
                     transcript_text=plain_transcript_text,
                 )
-                drawing_path = resolve_show_drawing(ep.get("podcast", ""), config)
                 cleaned_text = build_final_text_transcript(ep, plain_transcript_text, inferred_speakers)
                 cleaned_markdown = build_final_markdown_transcript(
                     ep,
                     plain_transcript_text,
                     inferred_speakers,
-                    drawing_path=drawing_path,
                 )
                 with open(cleaned_txt_path, "w", encoding="utf-8") as f:
                     f.write(cleaned_text)

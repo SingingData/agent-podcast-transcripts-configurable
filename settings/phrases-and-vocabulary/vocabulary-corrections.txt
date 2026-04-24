@@ -1,6 +1,8 @@
 # Format:
 # Canonical Name | misspelling 1, misspelling 2, misspelling 3
 # Case-insensitive match on misspellings; replace with canonical spelling.
+# To delete a phrase entirely, leave the right-hand side empty:
+# Phrase to remove |
 
 Michael Batnick | Michael Batnik
 Ritholtz Wealth Management | Redholtz Wealth Management
@@ -10,3 +12,4 @@ Ritholtz | Red Holtz
 Scariness | scaryness
 Animal Spirits | Animal Sprouts
 Ritholtz Wealth Management | Redholz-Wealth Management 
+See ya! |
