@@ -1213,8 +1213,10 @@ def load_state():
         with open(STATE_FILE, "r") as f:
             data = json.load(f)
         data["processed_guids"] = set(data.get("processed_guids", []))
+        data.setdefault("episodes", [])
+        data.setdefault("retry_queue", [])
         return data
-    return {"processed_guids": set(), "last_run": None, "episodes": []}
+    return {"processed_guids": set(), "last_run": None, "episodes": [], "retry_queue": []}
 
 def save_state(state):
     serialisable = dict(state)
@@ -1224,6 +1226,27 @@ def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(serialisable, f, indent=2)
     log.info("State saved.")
+
+
+def queue_episode_for_retry(state, episode, error):
+    retry_queue = [item for item in state.get("retry_queue", []) if item.get("guid") != episode.get("guid")]
+    queued_episode = dict(episode)
+    queued_episode["retry_queued_at"] = datetime.now().isoformat()
+    queued_episode["last_error"] = str(error)
+    retry_queue.append(queued_episode)
+    state["retry_queue"] = retry_queue
+    if episode.get("guid"):
+        state["processed_guids"].discard(episode["guid"])
+
+
+def remove_episode_from_retry_queue(state, guid):
+    if not guid:
+        return
+    retry_queue = state.get("retry_queue", [])
+    filtered = [item for item in retry_queue if item.get("guid") != guid]
+    if len(filtered) != len(retry_queue):
+        state["retry_queue"] = filtered
+        log.info(f"Removed episode from retry queue after success: {guid}")
 
 # ── RSS Fetching ──────────────────────────────────────────────────────────────
 
@@ -1374,6 +1397,12 @@ def fetch_all_new_episodes(state, config):
     else:
         log.info("Latest transcribed episode published timestamp: none (first-run behavior)")
 
+    if not config.test_mode:
+        retry_queue = state.get("retry_queue", [])
+        if retry_queue:
+            log.info(f"Pending retry episodes carried into this run: {len(retry_queue)}")
+            all_episodes.extend(retry_queue)
+
     for podcast_name, rss_url, title_filter in config.podcasts:
         try:
             eps = fetch_new_episodes_for_podcast(
@@ -1388,6 +1417,17 @@ def fetch_all_new_episodes(state, config):
         except Exception as e:
             log.error(f"[{podcast_name}] Failed to fetch RSS: {e}")
 
+    deduped_episodes = []
+    seen_guids = set()
+    for ep in all_episodes:
+        guid = ep.get("guid")
+        if guid and guid in seen_guids:
+            continue
+        if guid:
+            seen_guids.add(guid)
+        deduped_episodes.append(ep)
+
+    all_episodes = deduped_episodes
     all_episodes.sort(key=lambda ep: ep.get("published_at") or "", reverse=True)
 
     if config.test_mode:
@@ -2265,7 +2305,7 @@ def build_final_markdown_transcript(episode, plain_text, speakers=None):
 
 
 
-def format_transcript_html(episode, final_text, drawing_cid=None):
+def format_transcript_html(episode, final_text, drawing_src=None, footer_src=None):
     """Render HTML email that mirrors the final cleaned transcript structure."""
     words, read_min = _word_count_meta(final_text)
 
@@ -2301,11 +2341,11 @@ def format_transcript_html(episode, final_text, drawing_cid=None):
             continue
 
         content_paragraph_index += 1
-        if drawing_cid and content_paragraph_index == 2 and not drawing_inserted:
+        if drawing_src and content_paragraph_index == 2 and not drawing_inserted:
             safe_text = html.escape(text)
             safe_text = re.sub(r'\*\*([^*]+):\*\*', r'<strong style="color:#1a1a2e">\1:</strong>', safe_text)
             paragraph_blocks.append(f'''        <div class="image-wrap-block">
-          <img class="inline-show-drawing" src="cid:{drawing_cid}" alt="{html.escape(episode['podcast'])} drawing">
+          <img class="inline-show-drawing" src="{html.escape(drawing_src, quote=True)}" alt="{html.escape(episode['podcast'])} drawing">
           <p>{safe_text}</p>
         </div>''')
             drawing_inserted = True
@@ -2318,10 +2358,10 @@ def format_transcript_html(episode, final_text, drawing_cid=None):
     speakers_match = re.search(r"\*\*Speakers:\*\*\s*(.+)", final_text)
 
     production_crew_html = ""
-    if os.path.exists(PRODUCTION_CREW_DRAWING):
-        production_crew_html = '''
+    if footer_src:
+        production_crew_html = f'''
       <div class="footer-image-wrap">
-        <img class="footer-image" src="cid:production_crew_footer_image" alt="Production crew drawing">
+        <img class="footer-image" src="{html.escape(footer_src, quote=True)}" alt="Production crew drawing">
       </div>'''
 
     return f"""<!DOCTYPE html>
@@ -2416,8 +2456,14 @@ Words: {words:,} · ~{read_min} min read
     drawing_rel_path = resolve_show_drawing(episode.get("podcast", ""), config)
     drawing_abs_path = os.path.join(BASE_DIR, drawing_rel_path) if drawing_rel_path else None
     drawing_cid = "show_drawing_image" if drawing_abs_path and os.path.exists(drawing_abs_path) else None
+    footer_cid = "production_crew_footer_image" if os.path.exists(PRODUCTION_CREW_DRAWING) else None
 
-    html_body = format_transcript_html(episode, final_text or plain_text, drawing_cid=drawing_cid)
+    html_body = format_transcript_html(
+        episode,
+        final_text or plain_text,
+        drawing_src=f"cid:{drawing_cid}" if drawing_cid else None,
+        footer_src=f"cid:{footer_cid}" if footer_cid else None,
+    )
     safe_title = make_safe_title(episode["title"], config)
     emailed_html_path = os.path.join(TRANSCRIPT_DIR, f"emailed_body_{safe_title}.html")
 
@@ -2462,9 +2508,20 @@ Words: {words:,} · ~{read_min} min read
             server.login(gmail_address, gmail_password)
             server.sendmail(gmail_address, recipients, msg.as_string())
 
+    def _to_browser_src(asset_path):
+        if not asset_path or not os.path.exists(asset_path):
+            return None
+        return os.path.relpath(asset_path, start=os.path.dirname(emailed_html_path)).replace(os.sep, "/")
+
     def _write_local_html_copy():
+        local_html_body = format_transcript_html(
+            episode,
+            final_text or plain_text,
+            drawing_src=_to_browser_src(drawing_abs_path),
+            footer_src=_to_browser_src(PRODUCTION_CREW_DRAWING),
+        )
         with open(emailed_html_path, "w", encoding="utf-8") as f:
-            f.write(html_body)
+            f.write(local_html_body)
         log.info(f"Saved emailed HTML body to {emailed_html_path}")
 
     try:
@@ -2491,26 +2548,29 @@ Words: {words:,} · ~{read_min} min read
         return 0
 
 
-def send_alert_email(subject, body):
+def send_alert_email(subject, body, config=None):
+    config = config or CONFIG
     gmail_address = os.getenv("GMAIL_ADDRESS")
     gmail_password = os.getenv("GMAIL_APP_PASSWORD", "").replace(" ", "")
-    recipient = os.getenv("NOTIFICATION_EMAIL") or os.getenv("TRANSCRIPT_RECIPIENT")
+    recipients = parse_recipient_list(os.getenv("NOTIFICATION_EMAIL")) or get_transcript_recipients(config)
 
-    if not all([gmail_address, gmail_password, recipient]):
+    if not all([gmail_address, gmail_password]) or not recipients:
         return
 
     msg = MIMEMultipart()
     msg["From"] = gmail_address
-    msg["To"] = recipient
+    msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain"))
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(gmail_address, gmail_password)
-            server.sendmail(gmail_address, recipient, msg.as_string())
+            server.sendmail(gmail_address, recipients, msg.as_string())
     except Exception as e:
         log.error(f"Alert email failed: {e}")
+
+
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -2731,6 +2791,7 @@ def main():
                 log.info(f"  {'─' * 45}")
                 log.info(f"  ⏱ Total episode time:       {ep_elapsed:.1f}s ({ep_elapsed/60:.1f} min)")
 
+                remove_episode_from_retry_queue(state, ep["guid"])
                 state["processed_guids"].add(ep["guid"])
                 state["episodes"].append({
                     "guid": ep["guid"],
@@ -2757,9 +2818,26 @@ def main():
 
             except Exception as e:
                 log.error(f"Failed to process episode '{ep['title']}': {e}", exc_info=True)
+                deleted_audio = False
+                if audio_path and os.path.exists(audio_path):
+                    os.remove(audio_path)
+                    deleted_audio = True
+                    log.info(f"Deleted source audio after failure so next run will re-download it: {audio_path}")
+
+                queue_episode_for_retry(state, ep, e)
+                save_state(state)
                 send_alert_email(
                     f"⚠️ Transcript Agent Error: {ep['title']}",
-                    f"Failed to process episode:\n{ep['title']}\n\nError:\n{e}\n\nCheck {LOG_FILE}"
+                    (
+                        f"Failed to process episode:\n{ep['title']}\n\n"
+                        f"Podcast:\n{ep['podcast']}\n\n"
+                        f"Error:\n{e}\n\n"
+                        f"Queued for retry on next run: yes\n"
+                        f"Deleted cached source audio: {'yes' if deleted_audio else 'no'}\n"
+                        f"Continuing to next episode in this run: yes\n\n"
+                        f"Check {LOG_FILE}"
+                    ),
+                    config=config,
                 )
             finally:
                 # Audio retained for AUDIO_RETENTION_HOURS (cleanup happens at start of run)
@@ -2779,7 +2857,8 @@ def main():
         log.error(f"Hard failure: {e}", exc_info=True)
         send_alert_email(
             "⚠️ Transcript Agent Hard Failure",
-            f"The Compound transcript agent failed:\n\n{e}\n\nCheck {LOG_FILE}"
+            f"The Compound transcript agent failed:\n\n{e}\n\nCheck {LOG_FILE}",
+            config=config,
         )
         raise
     finally:
