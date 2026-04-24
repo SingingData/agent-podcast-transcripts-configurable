@@ -314,6 +314,7 @@ class RuntimeConfig:
     download_retries: int
     download_timeout_seconds: int
     download_retry_backoff_base_seconds: int
+    email_retry_delays_seconds: list[int]
     llm_request_timeout_seconds: int
     llm_provider: str | None
     llm_model: str | None
@@ -321,6 +322,8 @@ class RuntimeConfig:
     force_reprocess: bool
     llm_cleanup_prompt: str
     show_drawings: dict
+    smtp_host: str
+    smtp_port: int
 
 
 TEST_MODE_MONTH_LOOKUP = {
@@ -374,6 +377,16 @@ def get_most_recent_month_window(month_number, now=None):
     else:
         end = datetime(year, month_number + 1, 1)
     return start, end
+
+
+def parse_int_csv(value, default=None):
+    items = []
+    for raw in (value or "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        items.append(int(raw))
+    return items if items else list(default or [])
 
 
 def reset_test_mode_settings():
@@ -454,6 +467,7 @@ def load_runtime_config():
         download_retries=int(settings["DOWNLOAD_RETRIES"]),
         download_timeout_seconds=int(settings["DOWNLOAD_TIMEOUT_SECONDS"]),
         download_retry_backoff_base_seconds=int(settings["DOWNLOAD_RETRY_BACKOFF_BASE_SECONDS"]),
+        email_retry_delays_seconds=parse_int_csv(settings.get("EMAIL_RETRY_DELAYS_SECONDS", "5,15"), default=[5, 15]),
         llm_request_timeout_seconds=int(settings.get("LLM_REQUEST_TIMEOUT_SECONDS", "120")),
         llm_provider=os.getenv("LLM_PROVIDER"),
         llm_model=os.getenv("LLM_MODEL"),
@@ -461,6 +475,8 @@ def load_runtime_config():
         force_reprocess=os.getenv("FORCE_REPROCESS", "false").lower() == "true",
         llm_cleanup_prompt=llm_cleanup_prompt,
         show_drawings=load_show_drawings(SHOW_DRAWINGS_FILE),
+        smtp_host=service_endpoints.get("SMTP_HOST", "smtp.gmail.com"),
+        smtp_port=int(service_endpoints.get("SMTP_PORT", "465")),
     )
 
 
@@ -2522,7 +2538,7 @@ Words: {words:,} · ~{read_min} min read
         msg.attach(part)
 
     def _attempt_send():
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        with smtplib.SMTP_SSL(config.smtp_host, config.smtp_port) as server:
             server.login(gmail_address, gmail_password)
             server.sendmail(gmail_address, recipients, msg.as_string())
 
@@ -2551,7 +2567,7 @@ Words: {words:,} · ~{read_min} min read
     except Exception as e:
         log.error(f"Email failed: {e}")
         if retry:
-            for wait in (5, 15):
+            for wait in config.email_retry_delays_seconds:
                 log.info(f"Retrying email in {wait}s...")
                 time.sleep(wait)
                 try:
@@ -2582,7 +2598,7 @@ def send_alert_email(subject, body, config=None):
     msg.attach(MIMEText(body, "plain"))
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        with smtplib.SMTP_SSL(config.smtp_host, config.smtp_port) as server:
             server.login(gmail_address, gmail_password)
             server.sendmail(gmail_address, recipients, msg.as_string())
     except Exception as e:

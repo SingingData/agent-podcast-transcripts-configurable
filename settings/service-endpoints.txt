@@ -1,3 +1,5 @@
 # Service API base URLs
 XAI_BASE_URL=https://api.x.ai/v1
 PERPLEXITY_BASE_URL=https://api.perplexity.ai
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
