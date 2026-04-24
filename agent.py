@@ -23,6 +23,7 @@ import re
 import html
 import json
 import time
+import calendar
 import shutil
 import smtplib
 import logging
@@ -255,6 +256,8 @@ class RuntimeConfig:
     max_episodes_per_run: int
     test_mode: bool
     test_mode_episode_count: int
+    test_mode_month: str
+    test_mode_month_number: int | None
     audio_retention_hours: int
     safe_title_max_len: int
     opening_ad_max_start_seconds: int
@@ -270,9 +273,102 @@ class RuntimeConfig:
     show_drawings: dict
 
 
+TEST_MODE_MONTH_LOOKUP = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
+
+
+def parse_test_mode_month(value):
+    normalized = re.sub(r"[^a-z]", "", (value or "").lower())
+    if not normalized:
+        return None
+
+    month_number = TEST_MODE_MONTH_LOOKUP.get(normalized)
+    if month_number is None:
+        valid_values = ", ".join(calendar.month_abbr[i] for i in range(1, 13))
+        raise ValueError(
+            f"Invalid TEST_MODE_MONTH '{value}'. Use a month name or abbreviation like: {valid_values}."
+        )
+    return month_number
+
+
+def get_most_recent_month_window(month_number, now=None):
+    now = now or datetime.now()
+    year = now.year if month_number <= now.month else now.year - 1
+    start = datetime(year, month_number, 1)
+    if month_number == 12:
+        end = datetime(year + 1, 1, 1)
+    else:
+        end = datetime(year, month_number + 1, 1)
+    return start, end
+
+
+def reset_test_mode_settings():
+    if not os.path.exists(TRANSCRIPTION_SETTINGS_FILE):
+        return
+
+    updates = {
+        "TEST_MODE": "false",
+        "TEST_MODE_EPISODE_COUNT": "1",
+        "TEST_MODE_MONTH": "",
+    }
+
+    with open(TRANSCRIPTION_SETTINGS_FILE, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    seen = set()
+    updated_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            updated_lines.append(line)
+            continue
+        key, _ = line.split("=", 1)
+        key = key.strip()
+        if key in updates:
+            updated_lines.append(f"{key}={updates[key]}\n")
+            seen.add(key)
+        else:
+            updated_lines.append(line)
+
+    for key, value in updates.items():
+        if key not in seen:
+            updated_lines.append(f"{key}={value}\n")
+
+    with open(TRANSCRIPTION_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        f.writelines(updated_lines)
+
+    log.info("Reset test-mode settings to defaults: TEST_MODE=false, TEST_MODE_EPISODE_COUNT=1, TEST_MODE_MONTH=")
+
+
 def load_runtime_config():
     settings = load_key_value_settings(TRANSCRIPTION_SETTINGS_FILE)
     service_endpoints = load_key_value_settings(SERVICE_ENDPOINTS_FILE)
+    raw_test_mode_month = settings.get("TEST_MODE_MONTH", "").strip()
+    test_mode_month_number = parse_test_mode_month(raw_test_mode_month) if raw_test_mode_month else None
 
     with open(LLM_CLEANUP_PROMPT_FILE, "r", encoding="utf-8") as f:
         llm_cleanup_prompt = f.read()
@@ -294,6 +390,8 @@ def load_runtime_config():
         max_episodes_per_run=int(settings["MAX_EPISODES_PER_RUN"]),
         test_mode=settings.get("TEST_MODE", "false").lower() == "true",
         test_mode_episode_count=int(settings.get("TEST_MODE_EPISODE_COUNT", "1")),
+        test_mode_month=raw_test_mode_month,
+        test_mode_month_number=test_mode_month_number,
         audio_retention_hours=int(settings["AUDIO_RETENTION_HOURS"]),
         safe_title_max_len=int(settings["SAFE_TITLE_MAX_LEN"]),
         opening_ad_max_start_seconds=int(settings["OPENING_AD_MAX_START_SECONDS"]),
@@ -1162,15 +1260,10 @@ def fetch_new_episodes_for_podcast(podcast_name, rss_url, title_filter, state, c
     candidates.sort(key=lambda ep: ep.get("published_at") or "", reverse=True)
 
     if config.test_mode:
-        selected = candidates[:config.test_mode_episode_count]
-        if selected:
-            log.info(
-                f"[{podcast_name}] TEST_MODE: selected {len(selected)} most recently published episode(s) "
-                f"for full rerun (cached media reused when available)."
-            )
-        else:
-            log.info(f"[{podcast_name}] TEST_MODE: no matching episodes found.")
-        return selected
+        log.info(
+            f"[{podcast_name}] TEST_MODE: added {len(candidates)} candidate episode(s) to the shared test-mode pool."
+        )
+        return candidates
 
     if not candidates:
         log.info(f"[{podcast_name}] No new episodes.")
@@ -1207,10 +1300,30 @@ def fetch_all_new_episodes(state, config):
     all_episodes.sort(key=lambda ep: ep.get("published_at") or "", reverse=True)
 
     if config.test_mode:
-        selected = all_episodes[:config.test_mode_episode_count]
-        log.info(
-            f"TEST_MODE: Processing {len(selected)} most recently published episode(s) across all matching feeds."
-        )
+        filtered_episodes = all_episodes
+        if config.test_mode_month_number is not None:
+            month_start, month_end = get_most_recent_month_window(config.test_mode_month_number)
+            filtered_episodes = [
+                ep for ep in all_episodes
+                if ep.get("published_at")
+                and month_start <= datetime.fromisoformat(ep["published_at"]) < month_end
+            ]
+            log.info(
+                "TEST_MODE: limiting candidates to the most recent occurrence of "
+                f"{calendar.month_name[config.test_mode_month_number]} "
+                f"({month_start.strftime('%Y-%m')}) — {len(filtered_episodes)} match(es) found."
+            )
+
+        selected = filtered_episodes[:config.test_mode_episode_count]
+        if config.test_mode_month_number is not None:
+            log.info(
+                f"TEST_MODE: Processing {len(selected)} episode(s) from "
+                f"{calendar.month_name[config.test_mode_month_number]} {month_start.year} across all matching feeds."
+            )
+        else:
+            log.info(
+                f"TEST_MODE: Processing {len(selected)} most recently published episode(s) across all matching feeds."
+            )
         return selected
 
     log.info(f"Total new episodes to process across all podcasts: {len(all_episodes)}")
@@ -2121,7 +2234,17 @@ def main():
     log.info(f"  WhisperX: model={config.whisper_model} | device={config.whisperx_device} | compute_type={config.whisper_compute_type}")
     log.info(f"  LLM: {config.llm_provider} | paragraph_gap={config.paragraph_gap_secs}s")
     log.info(f"  Audio retention: {config.audio_retention_hours}h")
-    mode_text = f"TEST ({config.test_mode_episode_count} recent episode(s))" if config.test_mode else "NORMAL"
+    if config.test_mode:
+        if config.test_mode_month_number is not None:
+            month_start, _ = get_most_recent_month_window(config.test_mode_month_number)
+            mode_text = (
+                f"TEST ({config.test_mode_episode_count} episode(s) from "
+                f"{calendar.month_name[config.test_mode_month_number]} {month_start.year})"
+            )
+        else:
+            mode_text = f"TEST ({config.test_mode_episode_count} recent episode(s))"
+    else:
+        mode_text = "NORMAL"
     log.info(f"  Mode: {mode_text} | force_reprocess={config.force_reprocess}")
     log.info(f"Podcasts: {[p[0] for p in config.podcasts]}")
     log.info("=" * 60)
@@ -2317,6 +2440,8 @@ def main():
         raise
     finally:
         release_shared_whisperx_resources(shared_resources)
+        if config.test_mode:
+            reset_test_mode_settings()
 
 if __name__ == "__main__":
     main()

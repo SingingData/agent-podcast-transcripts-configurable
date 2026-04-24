@@ -207,6 +207,8 @@ If you are not using conda, either:
 
 ## Running the agent
 
+There are a number of ways you can run the agent.  You can run directly (see below).  Or you can run with the help of an agent harness.  I highly recommend this option as it's so much easier once you get the harness set up.  
+
 ### Run through an agent harness (OpenClaw, Hermes, or another launcher)
 
 If you prefer, you can run this repo through an agent harness instead of calling the script manually. In that setup, the harness should use this repository as its working directory and launch `agent.py` with the same Python environment and `.env` settings described above.
@@ -238,11 +240,23 @@ Relevant settings:
 ```txt
 TEST_MODE=true
 TEST_MODE_EPISODE_COUNT=6
+TEST_MODE_MONTH=
 ```
 
 What test mode does:
 - processes only the most recent `TEST_MODE_EPISODE_COUNT` matching episodes instead of the normal selection flow
 - keeps intermediate transcript artifacts that are useful for inspection and debugging
+
+Optional month selector:
+- leave `TEST_MODE_MONTH=` blank to use the default behavior and pull the most recent episodes
+- set `TEST_MODE_MONTH` to a month name or abbreviation such as `January`, `Jan`, `February`, or `Feb` to pull test episodes from the most recent occurrence of that month within the last 12 months
+- after the run finishes, test mode settings are automatically reset to:
+
+```txt
+TEST_MODE=false
+TEST_MODE_EPISODE_COUNT=1
+TEST_MODE_MONTH=
+```
 
 Intermediate artifacts written only in test mode:
 - `transcripts/raw_transcript_{safe_title}.txt`
