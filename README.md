@@ -117,6 +117,58 @@ This matches the default wrapper configuration in:
 
 If you want to use a different Conda environment name, update that file to match.
 
+#### If you are running on Linux
+
+You can install Miniconda directly from the command line.
+
+If `curl` is available, run:
+
+```bash
+curl -O https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh
+```
+
+If you prefer `wget`, run:
+
+```bash
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh
+```
+
+During the installer prompts:
+- review and accept the license
+- confirm the install location
+- allow the installer to initialize conda for your shell when prompted
+
+After installation finishes, open a new terminal window, or reload your shell configuration, then verify the install:
+
+```bash
+conda --version
+conda list
+```
+
+Create the `fastai` environment with Python 3.11:
+
+```bash
+conda create -n fastai python=3.11 -y
+conda activate fastai
+```
+
+Install the required packages into `fastai`:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install fastai
+python -m pip install -r requirements.txt
+```
+
+Install `ffmpeg` on Linux as well, and make sure it is available on your `PATH` before running the agent.
+
+This matches the default wrapper configuration in:
+- `runtime-operations-config/runtime-config.txt`
+
+If you want to use a different Conda environment name, update that file to match.
+
 ### 3. Create your `.env`
 
 Copy the template and fill in real values:
@@ -154,6 +206,14 @@ If you are not using conda, either:
 - run `agent.py` directly from your activated environment
 
 ## Running the agent
+
+### Run through an agent harness (OpenClaw, Hermes, or another launcher)
+
+If you prefer, you can run this repo through an agent harness instead of calling the script manually. In that setup, the harness should use this repository as its working directory and launch `agent.py` with the same Python environment and `.env` settings described above.
+
+For OpenClaw, see the official documentation at `docs.openclaw.ai` (or your local OpenClaw docs if it is already installed).
+
+For Hermes or any other harness, follow that tool's installation and setup guide, then configure it to run this repo with `agent.py` as the entry point.
 
 ### Run through the wrapper
 
