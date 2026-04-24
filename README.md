@@ -5,7 +5,7 @@ This agent transcribes selected podcast episodes with WhisperX, applies determin
 
 This agent is written to run locally on a CPU and with minimal token expense.  Note, it can be further configured to run the LLM clean-up lcoally and to add a diarization step to identify the speakers in-line.  
 
-To run locally, you need to install the requirements listed below.  Note, I recommend installing from miniconda, and further install the fastai module (in a virtual environment in python if you can) to get most of yoru requirements loaded in one throw.  
+To run locally, you need to install the requirements listed below.  Note, if you don't already have python on your machine, I strongly recommend installing from miniconda (details below) and after that install the fastai python module (details below) to get most of yoru requirements loaded in one throw.  
 
 ## What you need before running
 
