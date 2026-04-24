@@ -1752,8 +1752,56 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
     log.info(f"Running LLM cleanup pass via {config.llm_provider}...")
     t0 = time.time()
     llm_timeout = max(1, config.llm_request_timeout_seconds)
+    request_content = config.llm_cleanup_prompt + text
+    max_output_tokens = int(os.getenv("LLM_MAX_TOKENS"))
+    estimated_input_tokens = max(1, (len(request_content) + 3) // 4)
 
-    try:
+    log.info(
+        "LLM cleanup request estimate — "
+        f"input tokens: ~{estimated_input_tokens}, max output tokens: {max_output_tokens} "
+        f"[provider={config.llm_provider}, model={config.llm_model}]"
+    )
+
+    def is_timeout_error(error):
+        message = str(error).lower()
+        return "timed out" in message or "timeout" in message
+
+    def get_retryable_service_error_details(error):
+        status_code = getattr(error, "status_code", None) or getattr(error, "status", None)
+        body = getattr(error, "body", None)
+
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except Exception:
+                body = None
+
+        if status_code is None:
+            match = re.search(r"error code:\s*(\d{3})", str(error), re.IGNORECASE)
+            if match:
+                status_code = int(match.group(1))
+
+        retryable = False
+        retry_after = None
+        if isinstance(body, dict):
+            retryable = bool(body.get("retryable"))
+            raw_retry_after = body.get("retry_after")
+            if raw_retry_after is not None:
+                try:
+                    retry_after = max(1, int(float(raw_retry_after)))
+                except Exception:
+                    retry_after = None
+
+        if retry_after is None:
+            match = re.search(r"retry_after['\"]?\s*[:=]\s*(\d+)", str(error), re.IGNORECASE)
+            if match:
+                retry_after = max(1, int(match.group(1)))
+
+        retryable_statuses = {500, 502, 503, 504, 520, 521, 522, 523, 524, 529}
+        is_retryable_service_error = retryable or (status_code in retryable_statuses)
+        return is_retryable_service_error, retry_after, status_code
+
+    def run_cleanup_once():
         usage = {}
 
         if config.llm_provider == "anthropic":
@@ -1761,9 +1809,9 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
             client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
             message = client.messages.create(
                 model=config.llm_model,
-                max_tokens=int(os.getenv("LLM_MAX_TOKENS")),
+                max_tokens=max_output_tokens,
                 temperature=config.llm_temperature,
-                messages=[{"role": "user", "content": config.llm_cleanup_prompt + text}]
+                messages=[{"role": "user", "content": request_content}]
             )
             cleaned = message.content[0].text.strip()
             usage = {
@@ -1775,11 +1823,11 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
 
         elif config.llm_provider == "openai":
             import openai
-            client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"), max_retries=0)
             response = client.chat.completions.create(
                 model=config.llm_model,
-                messages=[{"role": "user", "content": config.llm_cleanup_prompt + text}],
-                max_tokens=int(os.getenv("LLM_MAX_TOKENS")),
+                messages=[{"role": "user", "content": request_content}],
+                max_tokens=max_output_tokens,
                 temperature=config.llm_temperature,
                 timeout=llm_timeout,
             )
@@ -1793,11 +1841,15 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
 
         elif config.llm_provider in ("grok", "xai"):
             import openai
-            client = openai.OpenAI(api_key=os.getenv("XAI_API_KEY"), base_url=config.service_endpoints["XAI_BASE_URL"])
+            client = openai.OpenAI(
+                api_key=os.getenv("XAI_API_KEY"),
+                base_url=config.service_endpoints["XAI_BASE_URL"],
+                max_retries=0,
+            )
             response = client.chat.completions.create(
                 model=config.llm_model,
-                messages=[{"role": "user", "content": config.llm_cleanup_prompt + text}],
-                max_tokens=int(os.getenv("LLM_MAX_TOKENS")),
+                messages=[{"role": "user", "content": request_content}],
+                max_tokens=max_output_tokens,
                 temperature=config.llm_temperature,
                 timeout=llm_timeout,
             )
@@ -1811,11 +1863,15 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
 
         elif config.llm_provider == "perplexity":
             import openai
-            client = openai.OpenAI(api_key=os.getenv("PERPLEXITY_API_KEY"), base_url=config.service_endpoints["PERPLEXITY_BASE_URL"])
+            client = openai.OpenAI(
+                api_key=os.getenv("PERPLEXITY_API_KEY"),
+                base_url=config.service_endpoints["PERPLEXITY_BASE_URL"],
+                max_retries=0,
+            )
             response = client.chat.completions.create(
                 model=config.llm_model,
-                messages=[{"role": "user", "content": config.llm_cleanup_prompt + text}],
-                max_tokens=int(os.getenv("LLM_MAX_TOKENS")),
+                messages=[{"role": "user", "content": request_content}],
+                max_tokens=max_output_tokens,
                 temperature=config.llm_temperature,
                 timeout=llm_timeout,
             )
@@ -1831,6 +1887,39 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
             log.warning(f"Unknown LLM_PROVIDER '{config.llm_provider}' — skipping cleanup.")
             return text, {}
 
+        return cleaned, usage
+
+    try:
+        timeout_retry_used = False
+        service_retry_used = False
+
+        for attempt in (1, 2, 3):
+            try:
+                cleaned, usage = run_cleanup_once()
+                break
+            except Exception as e:
+                if not timeout_retry_used and is_timeout_error(e):
+                    timeout_retry_used = True
+                    log.warning(
+                        "LLM cleanup timed out; retrying once before fallback. "
+                        f"[provider={config.llm_provider}, timeout={llm_timeout}s, "
+                        f"estimated_input_tokens={estimated_input_tokens}, max_output_tokens={max_output_tokens}]"
+                    )
+                    continue
+
+                is_retryable_service_error, retry_after, status_code = get_retryable_service_error_details(e)
+                if not service_retry_used and is_retryable_service_error and retry_after:
+                    service_retry_used = True
+                    log.warning(
+                        "LLM cleanup hit a retryable upstream error; backing off before retry. "
+                        f"[provider={config.llm_provider}, status_code={status_code}, retry_after={retry_after}s, "
+                        f"estimated_input_tokens={estimated_input_tokens}, max_output_tokens={max_output_tokens}]"
+                    )
+                    time.sleep(retry_after)
+                    continue
+
+                raise
+
         elapsed = time.time() - t0
         usage["elapsed_s"] = round(elapsed, 1)
         log.info(
@@ -1845,8 +1934,9 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
         return text, {}
     except Exception as e:
         log.error(
-            "LLM cleanup failed (non-fatal, using raw transcript): "
-            f"{e} [provider={config.llm_provider}, timeout={llm_timeout}s]"
+            "LLM cleanup failed (non-fatal, using post-processed transcript): "
+            f"{e} [provider={config.llm_provider}, timeout={llm_timeout}s, "
+            f"estimated_input_tokens={estimated_input_tokens}, max_output_tokens={max_output_tokens}]"
         )
         return text, {}
 
@@ -2163,12 +2253,32 @@ def format_transcript_html(episode, final_text, drawing_cid=None):
 
 # ── Email ─────────────────────────────────────────────────────────────────────
 
-def send_transcript_email(episode, plain_text, transcript_path, final_text=None, extra_attachment_paths=None, retry=True):
+def parse_recipient_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def get_transcript_recipients(config: RuntimeConfig | None = None) -> list[str]:
+    config = config or CONFIG
+
+    default_recipients = parse_recipient_list(
+        os.getenv("TRANSCRIPT_RECIPIENTS") or os.getenv("TRANSCRIPT_RECIPIENT_PATTY")
+    )
+    test_run_recipients = parse_recipient_list(
+        os.getenv("TEST_RUN_RECIPIENTS") or os.getenv("TEST_RUN_RECIPIENT_PATTY")
+    ) or default_recipients
+
+    if config and config.test_mode:
+        return test_run_recipients
+    return default_recipients
+
+def send_transcript_email(episode, plain_text, transcript_path, final_text=None, extra_attachment_paths=None, retry=True, config=None):
     gmail_address = os.getenv("GMAIL_ADDRESS")
     gmail_password = os.getenv("GMAIL_APP_PASSWORD", "").replace(" ", "")
-    recipient = os.getenv("TRANSCRIPT_RECIPIENT_PATTY")
+    recipients = get_transcript_recipients(config)
 
-    if not all([gmail_address, gmail_password, recipient]):
+    if not all([gmail_address, gmail_password]) or not recipients:
         log.warning("Email credentials incomplete — skipping.")
         return 0
 
@@ -2186,7 +2296,7 @@ Words: {words:,} · ~{read_min} min read
 
 {plain_text}
 """
-    drawing_rel_path = resolve_show_drawing(episode.get("podcast", ""), CONFIG)
+    drawing_rel_path = resolve_show_drawing(episode.get("podcast", ""), config or CONFIG)
     drawing_abs_path = os.path.join(BASE_DIR, drawing_rel_path) if drawing_rel_path else None
     drawing_cid = "show_drawing_image" if drawing_abs_path and os.path.exists(drawing_abs_path) else None
 
@@ -2194,7 +2304,7 @@ Words: {words:,} · ~{read_min} min read
 
     msg = MIMEMultipart("related")
     msg["From"] = gmail_address
-    msg["To"] = recipient
+    msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
 
     alt = MIMEMultipart("alternative")
@@ -2231,12 +2341,12 @@ Words: {words:,} · ~{read_min} min read
     def _attempt_send():
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(gmail_address, gmail_password)
-            server.sendmail(gmail_address, recipient, msg.as_string())
+            server.sendmail(gmail_address, recipients, msg.as_string())
 
     try:
         _attempt_send()
         elapsed = time.time() - t0
-        log.info(f"Transcript emailed to {recipient} [{elapsed:.1f}s]")
+        log.info(f"Transcript emailed to {', '.join(recipients)} [{elapsed:.1f}s]")
         return elapsed
     except Exception as e:
         log.error(f"Email failed: {e}")
@@ -2247,7 +2357,7 @@ Words: {words:,} · ~{read_min} min read
                 try:
                     _attempt_send()
                     elapsed = time.time() - t0
-                    log.info(f"Transcript emailed to {recipient} on retry [{elapsed:.1f}s]")
+                    log.info(f"Transcript emailed to {', '.join(recipients)} on retry [{elapsed:.1f}s]")
                     return elapsed
                 except Exception as retry_e:
                     log.error(f"Retry failed: {retry_e}")
@@ -2435,7 +2545,13 @@ def main():
                     f.write(cleaned_markdown)
 
                 # ── Phase 6: Email ────────────────────────────────────────────
-                t_email = send_transcript_email(ep, plain_transcript_text, cleaned_txt_path, final_text=cleaned_text)
+                t_email = send_transcript_email(
+                    ep,
+                    plain_transcript_text,
+                    cleaned_txt_path,
+                    final_text=cleaned_text,
+                    config=config,
+                )
                 log.info(f"  ⏱ Phase 6 (Email):          {t_email:.1f}s")
 
                 # ── Summary ───────────────────────────────────────────────────

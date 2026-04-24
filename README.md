@@ -185,7 +185,8 @@ Minimum likely required values:
 - `LLM_MODEL`
 - API key for the provider you selected
 - SMTP/email settings
-- recipient email
+- `TRANSCRIPT_RECIPIENTS` for one or more regular-run recipients (comma-separated)
+- optional `TEST_RUN_RECIPIENTS` for one or more test-run recipients (comma-separated; defaults to `TRANSCRIPT_RECIPIENTS` if not set)
 
 ### 4. Check runtime launcher settings
 
@@ -246,6 +247,7 @@ TEST_MODE_MONTH=
 What test mode does:
 - processes only the most recent `TEST_MODE_EPISODE_COUNT` matching episodes instead of the normal selection flow
 - keeps intermediate transcript artifacts that are useful for inspection and debugging
+- sends transcript emails to `TEST_RUN_RECIPIENTS` during test runs only; if that variable is unset, it falls back to `TRANSCRIPT_RECIPIENTS`
 
 Optional month selector:
 - leave `TEST_MODE_MONTH=` blank to use the default behavior and pull the most recent episodes
