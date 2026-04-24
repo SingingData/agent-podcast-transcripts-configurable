@@ -1,7 +1,7 @@
 # agent-podcast-transcripts-configurable
 
 Configurable podcast transcription agent for Compound shows.
-This agent transcribes selected podcast episodes with WhisperX, applies deterministic cleanup steps, runs an optional LLM cleanup pass, and emails finished transcripts.
+This agent transcribes selected podcast episodes with WhisperX, applies deterministic cleanup steps, runs an optional LLM cleanup pass, and emails finished transcripts to email account(s) of your choosing.
 
 This agent is written to run locally on a CPU and with minimal token expense.  Note, it can be further configured to run the LLM clean-up lcoally rather than calling a service like Grok or Openai.  And it can be extended to add a diarization step to identify the speakers in-line, something I intend to add.  
 
