@@ -214,6 +214,31 @@ def apply_vocabulary_corrections(text, corrections):
     return updated_text, replacements_applied
 
 
+def remove_repeated_dotted_letter_runs(text):
+    """Remove obvious transcript junk like long runs of repeated dotted single letters."""
+    if not text:
+        return text, []
+
+    removals = []
+    pattern = re.compile(r"(?<!\w)([A-Za-z])(?:\.\s*\1){7,}\.", re.IGNORECASE)
+
+    def repl(match):
+        original = match.group(0)
+        letter = match.group(1)
+        count = len(re.findall(rf"{re.escape(letter)}\.", original, re.IGNORECASE))
+        removals.append({
+            "letter": letter,
+            "count": count,
+            "sample": original[:80] + ("..." if len(original) > 80 else ""),
+        })
+        return ""
+
+    cleaned = pattern.sub(repl, text)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned, removals
+
+
 OPENING_CATCH_PHRASES = load_phrase_list(OPENING_CATCH_PHRASES_FILE)
 OPENING_AD_PHRASES = load_phrase_list(OPENING_AD_PHRASES_FILE)
 CLOSING_AD_PHRASES = load_phrase_list(CLOSING_AD_PHRASES_FILE)
@@ -1766,6 +1791,50 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
         message = str(error).lower()
         return "timed out" in message or "timeout" in message
 
+    def normalize_sentence(sentence):
+        sentence = sentence.strip().lower()
+        sentence = re.sub(r"\s+", " ", sentence)
+        return sentence.strip(" \t\n\r\"'“”‘’.,!?;:-")
+
+    def analyze_degenerate_output(cleaned_text, usage):
+        stripped = (cleaned_text or "").strip()
+        if not stripped:
+            return "empty cleanup output"
+
+        sentences = [
+            normalize_sentence(part)
+            for part in re.split(r"(?<=[.!?])\s+", stripped)
+        ]
+        sentences = [s for s in sentences if s]
+
+        max_consecutive_repeats = 1
+        current_repeats = 1
+        for idx in range(1, len(sentences)):
+            if sentences[idx] == sentences[idx - 1]:
+                current_repeats += 1
+                max_consecutive_repeats = max(max_consecutive_repeats, current_repeats)
+            else:
+                current_repeats = 1
+
+        if max_consecutive_repeats >= 8:
+            return f"repeated sentence loop detected ({max_consecutive_repeats} consecutive repeats)"
+
+        if len(sentences) >= 12:
+            counts = {}
+            for sentence in sentences:
+                counts[sentence] = counts.get(sentence, 0) + 1
+            repeated_sentences = sum(count for count in counts.values() if count > 1)
+            repetition_ratio = repeated_sentences / len(sentences)
+            if repetition_ratio >= 0.35:
+                return f"repetition ratio too high ({repetition_ratio:.2f})"
+
+        output_tokens = usage.get("output_tokens")
+        ends_cleanly = stripped.endswith((".", "!", "?", '"', "'", "…”", "...”", "…"))
+        if output_tokens == max_output_tokens and not ends_cleanly:
+            return "cleanup output hit max tokens and appears truncated"
+
+        return None
+
     def get_retryable_service_error_details(error):
         status_code = getattr(error, "status_code", None) or getattr(error, "status", None)
         body = getattr(error, "body", None)
@@ -1892,12 +1961,28 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
     try:
         timeout_retry_used = False
         service_retry_used = False
+        degenerate_retry_used = False
 
-        for attempt in (1, 2, 3):
+        for attempt in (1, 2, 3, 4):
             try:
                 cleaned, usage = run_cleanup_once()
+                degeneration_reason = analyze_degenerate_output(cleaned, usage)
+                if degeneration_reason:
+                    raise ValueError(f"LLM cleanup produced degenerate output: {degeneration_reason}")
                 break
             except Exception as e:
+                if (
+                    not degenerate_retry_used
+                    and str(e).startswith("LLM cleanup produced degenerate output:")
+                ):
+                    degenerate_retry_used = True
+                    log.warning(
+                        "LLM cleanup produced degenerate output; rerunning once before fallback. "
+                        f"[{e} | provider={config.llm_provider}, timeout={llm_timeout}s, "
+                        f"estimated_input_tokens={estimated_input_tokens}, max_output_tokens={max_output_tokens}]"
+                    )
+                    continue
+
                 if not timeout_retry_used and is_timeout_error(e):
                     timeout_retry_used = True
                     log.warning(
@@ -2485,9 +2570,11 @@ def main():
                     plain_text,
                     config.vocabulary_corrections,
                 )
+                corrected_text, dotted_letter_run_removals = remove_repeated_dotted_letter_runs(corrected_text)
                 t_vocab = time.time() - t_vocab_start
                 whisperx_metrics["vocabulary_corrections_s"] = round(t_vocab, 2)
                 whisperx_metrics["vocabulary_corrections_count"] = sum(item["count"] for item in vocabulary_replacements)
+                whisperx_metrics["dotted_letter_run_removals_count"] = len(dotted_letter_run_removals)
                 if vocabulary_replacements:
                     replacement_summary = ", ".join(
                         f"{item['from']}→{item['to']} x{item['count']}" for item in vocabulary_replacements
@@ -2495,6 +2582,13 @@ def main():
                     log.info(f"  Applied vocabulary corrections: {replacement_summary}")
                 else:
                     log.info("  Applied vocabulary corrections: none")
+                if dotted_letter_run_removals:
+                    removal_summary = ", ".join(
+                        f"{item['letter']}. x{item['count']}" for item in dotted_letter_run_removals
+                    )
+                    log.info(f"  Removed repeated dotted-letter junk runs: {removal_summary}")
+                else:
+                    log.info("  Removed repeated dotted-letter junk runs: none")
                 log.info(f"  ⏱ Phase 3 (Vocabulary):     {t_vocab:.1f}s")
 
                 # ── Phase 4: Note Podcast Start in Transcript ─────────────────
