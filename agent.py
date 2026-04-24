@@ -2274,6 +2274,7 @@ def get_transcript_recipients(config: RuntimeConfig | None = None) -> list[str]:
     return default_recipients
 
 def send_transcript_email(episode, plain_text, transcript_path, final_text=None, extra_attachment_paths=None, retry=True, config=None):
+    config = config or CONFIG
     gmail_address = os.getenv("GMAIL_ADDRESS")
     gmail_password = os.getenv("GMAIL_APP_PASSWORD", "").replace(" ", "")
     recipients = get_transcript_recipients(config)
@@ -2296,11 +2297,13 @@ Words: {words:,} · ~{read_min} min read
 
 {plain_text}
 """
-    drawing_rel_path = resolve_show_drawing(episode.get("podcast", ""), config or CONFIG)
+    drawing_rel_path = resolve_show_drawing(episode.get("podcast", ""), config)
     drawing_abs_path = os.path.join(BASE_DIR, drawing_rel_path) if drawing_rel_path else None
     drawing_cid = "show_drawing_image" if drawing_abs_path and os.path.exists(drawing_abs_path) else None
 
     html_body = format_transcript_html(episode, final_text or plain_text, drawing_cid=drawing_cid)
+    safe_title = make_safe_title(episode["title"], config)
+    emailed_html_path = os.path.join(TRANSCRIPT_DIR, f"emailed_body_{safe_title}.html")
 
     msg = MIMEMultipart("related")
     msg["From"] = gmail_address
@@ -2343,8 +2346,14 @@ Words: {words:,} · ~{read_min} min read
             server.login(gmail_address, gmail_password)
             server.sendmail(gmail_address, recipients, msg.as_string())
 
+    def _write_local_html_copy():
+        with open(emailed_html_path, "w", encoding="utf-8") as f:
+            f.write(html_body)
+        log.info(f"Saved emailed HTML body to {emailed_html_path}")
+
     try:
         _attempt_send()
+        _write_local_html_copy()
         elapsed = time.time() - t0
         log.info(f"Transcript emailed to {', '.join(recipients)} [{elapsed:.1f}s]")
         return elapsed
@@ -2356,6 +2365,7 @@ Words: {words:,} · ~{read_min} min read
                 time.sleep(wait)
                 try:
                     _attempt_send()
+                    _write_local_html_copy()
                     elapsed = time.time() - t0
                     log.info(f"Transcript emailed to {', '.join(recipients)} on retry [{elapsed:.1f}s]")
                     return elapsed
