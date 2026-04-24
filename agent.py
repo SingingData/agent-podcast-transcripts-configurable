@@ -67,7 +67,6 @@ OPENING_AD_PHRASES_FILE = os.path.join(PHRASES_AND_VOCAB_DIR, "opening-ad-phrase
 CLOSING_AD_PHRASES_FILE = os.path.join(PHRASES_AND_VOCAB_DIR, "closing-ad-phrases.txt")
 VOCABULARY_CORRECTIONS_FILE = os.path.join(PHRASES_AND_VOCAB_DIR, "vocabulary-corrections.txt")
 SHOW_DRAWINGS_FILE = os.path.join(SETTINGS_DIR, "show-drawings.txt")
-PRODUCTION_CREW_IMAGE = os.path.join(BASE_DIR, "drawings", "caricature_drawings", "production_crew.png")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -298,8 +297,6 @@ def load_runtime_config():
     )
 
 
-CONFIG = load_runtime_config()
-
 # ── Resource Monitoring ───────────────────────────────────────────────────────
 
 def get_memory_usage_mb():
@@ -362,6 +359,9 @@ def load_known_hosts(path):
             hosts_by_podcast[podcast_name.strip()] = hosts
 
     return hosts_by_podcast
+
+
+CONFIG = load_runtime_config()
 
 
 def get_podcast_hosts(podcast_name):
@@ -1814,7 +1814,7 @@ def build_final_text_transcript(episode, plain_text, speakers=None):
 
 
 def build_final_markdown_transcript(episode, plain_text, speakers=None, drawing_path=None):
-    """Render the final markdown transcript, optionally inserting a drawing after the first paragraph."""
+    """Render the final markdown transcript, optionally inserting a left-aligned drawing after the first paragraph."""
     chunks = chunk_paragraphs_for_markdown(plain_text, max_sentences=4)
 
     published_display = episode.get("published", "")
@@ -1847,14 +1847,17 @@ def build_final_markdown_transcript(episode, plain_text, speakers=None, drawing_
 
         body.extend([chunk, ""])
         if drawing_path and not inserted_drawing:
-            body.extend([f"![{episode['podcast']} drawing]({drawing_path})", ""])
+            body.extend([
+                f'<img src="{drawing_path}" alt="{episode["podcast"]} drawing" align="left" width="220" style="margin: 0 18px 10px 0; border-radius: 8px;" />',
+                "",
+            ])
             inserted_drawing = True
 
     return "\n".join(header + body).strip() + "\n"
 
 
 
-def format_transcript_html(episode, final_text, production_crew_cid=None):
+def format_transcript_html(episode, final_text, drawing_cid=None):
     """Render HTML email that mirrors the final cleaned transcript structure."""
     words, read_min = _word_count_meta(final_text)
 
@@ -1878,29 +1881,36 @@ def format_transcript_html(episode, final_text, production_crew_cid=None):
         p = re.sub(r'\*\*([^*]+):\*\*', r'<strong style="color:#1a1a2e">\1:</strong>', p)
         return f"        <p>{p}</p>"
 
-    paragraph_html = []
+    paragraph_blocks = []
+    drawing_inserted = False
+    content_paragraph_index = 0
     for block in "\n".join(body_lines).split("\n\n"):
         text = block.strip()
         if not text:
             continue
         if text == "---":
-            paragraph_html.append('        <hr class="section-break">')
+            paragraph_blocks.append('        <hr class="section-break">')
             continue
-        paragraph_html.append(render_paragraph(text))
 
-    paragraph_html = "\n".join(paragraph_html)
+        content_paragraph_index += 1
+        if drawing_cid and content_paragraph_index == 2 and not drawing_inserted:
+            safe_text = html.escape(text)
+            safe_text = re.sub(r'\*\*([^*]+):\*\*', r'<strong style="color:#1a1a2e">\1:</strong>', safe_text)
+            paragraph_blocks.append(f'''        <div class="image-wrap-block">
+          <img class="inline-show-drawing" src="cid:{drawing_cid}" alt="{html.escape(episode['podcast'])} drawing">
+          <p>{safe_text}</p>
+        </div>''')
+            drawing_inserted = True
+            continue
+
+        paragraph_blocks.append(render_paragraph(text))
+
+    paragraph_html = "\n".join(paragraph_blocks)
 
     speakers_match = re.search(r"\*\*Speakers:\*\*\s*(.+)", final_text)
     speakers_html = ""
     if speakers_match:
         speakers_html = f'<div class="meta">Speakers: {html.escape(speakers_match.group(1))}</div>'
-
-    production_crew_html = ""
-    if production_crew_cid:
-        production_crew_html = f'''
-      <div class="footer-image-wrap">
-        <img class="footer-image" src="cid:{production_crew_cid}" alt="Production crew illustration">
-      </div>'''
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1919,8 +1929,9 @@ def format_transcript_html(episode, final_text, production_crew_cid=None):
     .body {{ padding: 40px 48px 48px; }}
     .body p {{ font-size: 17px; line-height: 1.85; margin: 0 0 1.4em; color: #1a1a1a; white-space: pre-wrap; }}
     .section-break {{ border: 0; border-top: 1px solid #e8e8e4; margin: 2em 0; }}
-    .footer-image-wrap {{ margin: 36px 0 12px; text-align: center; }}
-    .footer-image {{ max-width: 280px; width: 100%; height: auto; border-radius: 8px; }}
+    .image-wrap-block {{ overflow: auto; margin: 0 0 1.4em; }}
+    .image-wrap-block p {{ margin: 0; }}
+    .inline-show-drawing {{ float: left; max-width: 220px; width: 40%; min-width: 140px; height: auto; border-radius: 8px; margin: 0 18px 10px 0; }}
     .footer {{ padding: 20px 48px; background: #f5f5f0; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; font-size: 12px; color: #999; border-top: 1px solid #e8e8e4; }}
   </style>
 </head>
@@ -1936,7 +1947,6 @@ def format_transcript_html(episode, final_text, production_crew_cid=None):
     <div class="divider"></div>
     <div class="body">
 {paragraph_html}
-{production_crew_html}
     </div>
     <div class="footer">Transcript generated by WhisperX · The Compound Transcript Agent</div>
   </div>
@@ -1968,11 +1978,11 @@ Words: {words:,} · ~{read_min} min read
 
 {plain_text}
 """
-    production_crew_cid = None
-    if os.path.exists(PRODUCTION_CREW_IMAGE):
-        production_crew_cid = "production_crew_image"
+    drawing_rel_path = resolve_show_drawing(episode.get("podcast", ""), CONFIG)
+    drawing_abs_path = os.path.join(BASE_DIR, drawing_rel_path) if drawing_rel_path else None
+    drawing_cid = "show_drawing_image" if drawing_abs_path and os.path.exists(drawing_abs_path) else None
 
-    html_body = format_transcript_html(episode, final_text or plain_text, production_crew_cid=production_crew_cid)
+    html_body = format_transcript_html(episode, final_text or plain_text, drawing_cid=drawing_cid)
 
     msg = MIMEMultipart("related")
     msg["From"] = gmail_address
@@ -1984,11 +1994,11 @@ Words: {words:,} · ~{read_min} min read
     alt.attach(MIMEText(html_body, "html", "utf-8"))
     msg.attach(alt)
 
-    if production_crew_cid:
-        with open(PRODUCTION_CREW_IMAGE, "rb") as f:
+    if drawing_cid:
+        with open(drawing_abs_path, "rb") as f:
             img = MIMEImage(f.read())
-        img.add_header("Content-ID", f"<{production_crew_cid}>")
-        img.add_header("Content-Disposition", f"inline; filename={os.path.basename(PRODUCTION_CREW_IMAGE)}")
+        img.add_header("Content-ID", f"<{drawing_cid}>")
+        img.add_header("Content-Disposition", f"inline; filename={os.path.basename(drawing_abs_path)}")
         msg.attach(img)
 
     attachment_paths = [transcript_path]
