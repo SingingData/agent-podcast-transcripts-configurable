@@ -3,9 +3,9 @@
 Configurable podcast transcription agent for Compound shows.
 This agent transcribes selected podcast episodes with WhisperX, applies deterministic cleanup steps, runs an optional LLM cleanup pass, and emails finished transcripts.
 
-This agent is written to run locally on a CPU and with minimal token expense.  Note, it can be further configured to run the LLM clean-up lcoally and to add a diarization step to identify the speakers in-line.  
+This agent is written to run locally on a CPU and with minimal token expense.  Note, it can be further configured to run the LLM clean-up lcoally rather than calling a service like Grok or Openai.  And it can be extended to add a diarization step to identify the speakers in-line, something I intend to add.  
 
-To run locally, you need to install the requirements listed below.  Note, if you don't already have python on your machine, I strongly recommend installing from miniconda (details below) and after that install the fastai python module (details below) to get most of yoru requirements loaded in one throw.  
+To run locally, you need to install the requirements listed below.  Note, if you don't already have python on your machine, I strongly recommend installing from miniconda (details below) and after that install the fastai python module (details below) to get most of yoru requirements loaded in one throw.  Ask your LLM for help in running these set-up steps and getting it running.  
 
 ## What you need before running
 
