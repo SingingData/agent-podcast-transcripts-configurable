@@ -66,6 +66,7 @@ OPENING_CATCH_PHRASES_FILE = os.path.join(PHRASES_AND_VOCAB_DIR, "opening-catch-
 OPENING_AD_PHRASES_FILE = os.path.join(PHRASES_AND_VOCAB_DIR, "opening-ad-phrases.txt")
 CLOSING_AD_PHRASES_FILE = os.path.join(PHRASES_AND_VOCAB_DIR, "closing-ad-phrases.txt")
 VOCABULARY_CORRECTIONS_FILE = os.path.join(PHRASES_AND_VOCAB_DIR, "vocabulary-corrections.txt")
+SHOW_DRAWINGS_FILE = os.path.join(SETTINGS_DIR, "show-drawings.txt")
 PRODUCTION_CREW_IMAGE = os.path.join(BASE_DIR, "drawings", "caricature_drawings", "production_crew.png")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -254,6 +255,7 @@ class RuntimeConfig:
     llm_temperature: float
     force_reprocess: bool
     llm_cleanup_prompt: str
+    show_drawings: dict
 
 
 def load_runtime_config():
@@ -292,6 +294,7 @@ def load_runtime_config():
         llm_temperature=float(settings["LLM_TEMPERATURE"]),
         force_reprocess=os.getenv("FORCE_REPROCESS", "false").lower() == "true",
         llm_cleanup_prompt=llm_cleanup_prompt,
+        show_drawings=load_show_drawings(SHOW_DRAWINGS_FILE),
     )
 
 
@@ -311,6 +314,37 @@ def log_resources(phase_name):
     log.info(f"  📊 [{phase_name}] Memory: {mem_mb:.1f} MB | CPU: {cpu_percent:.1f}%")
 
 # ── Host Config ──────────────────────────────────────────────────────────────
+
+def load_show_drawings(path):
+    """Load show-to-drawing mapping from a simple editable text file."""
+    drawings = {}
+    if not os.path.exists(path):
+        return drawings
+
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "|" not in line:
+                continue
+            show_name, drawing_path = line.split("|", 1)
+            drawings[show_name.strip()] = drawing_path.strip()
+
+    return drawings
+
+
+def resolve_show_drawing(podcast_name, config):
+    """Resolve show-specific drawing path, with optional production-crew fallback."""
+    relative_path = config.show_drawings.get(podcast_name) or config.show_drawings.get("production-crew")
+    if not relative_path:
+        return None
+
+    absolute_path = os.path.join(BASE_DIR, relative_path)
+    if os.path.exists(absolute_path):
+        return relative_path
+
+    log.warning(f"Configured drawing not found for '{podcast_name}': {relative_path}")
+    return None
+
 
 def load_known_hosts(path):
     """Load known hosts per podcast from a simple editable text file."""
@@ -1743,8 +1777,8 @@ def chunk_paragraphs_for_markdown(text, max_sentences=4):
 
 
 
-def build_markdown_transcript(episode, plain_text, speakers=None):
-    """Render a more readable markdown transcript with metadata and cleaner paragraphing."""
+def build_final_text_transcript(episode, plain_text, speakers=None):
+    """Render the final plain-text transcript without image references."""
     chunks = chunk_paragraphs_for_markdown(plain_text, max_sentences=4)
 
     published_display = episode.get("published", "")
@@ -1773,8 +1807,48 @@ def build_markdown_transcript(episode, plain_text, speakers=None):
         if chunk.strip() == "PODCAST START":
             body.extend(["---", ""])
             continue
+        body.extend([chunk, ""])
+
+    return "\n".join(header + body).strip() + "\n"
+
+
+
+def build_final_markdown_transcript(episode, plain_text, speakers=None, drawing_path=None):
+    """Render the final markdown transcript, optionally inserting a drawing after the first paragraph."""
+    chunks = chunk_paragraphs_for_markdown(plain_text, max_sentences=4)
+
+    published_display = episode.get("published", "")
+    published_at = parse_entry_published_at(episode)
+    if published_at:
+        published_display = published_at.strftime("%Y-%m-%d")
+
+    header = [
+        f"# {episode['title']}",
+        "",
+        f"**Published:** {published_display}",
+    ]
+
+    speakers_line = format_speakers_line(speakers or [])
+    if speakers_line:
+        header.extend(["", speakers_line])
+
+    header.extend([
+        "",
+        "---",
+        "",
+    ])
+
+    body = []
+    inserted_drawing = False
+    for chunk in chunks:
+        if chunk.strip() == "PODCAST START":
+            body.extend(["---", ""])
+            continue
 
         body.extend([chunk, ""])
+        if drawing_path and not inserted_drawing:
+            body.extend([f"![{episode['podcast']} drawing]({drawing_path})", ""])
+            inserted_drawing = True
 
     return "\n".join(header + body).strip() + "\n"
 
@@ -2110,11 +2184,18 @@ def main():
                     episode_summary=ep.get("summary", ""),
                     transcript_text=plain_transcript_text,
                 )
-                cleaned_text = build_markdown_transcript(ep, plain_transcript_text, inferred_speakers)
+                drawing_path = resolve_show_drawing(ep.get("podcast", ""), config)
+                cleaned_text = build_final_text_transcript(ep, plain_transcript_text, inferred_speakers)
+                cleaned_markdown = build_final_markdown_transcript(
+                    ep,
+                    plain_transcript_text,
+                    inferred_speakers,
+                    drawing_path=drawing_path,
+                )
                 with open(cleaned_txt_path, "w", encoding="utf-8") as f:
                     f.write(cleaned_text)
                 with open(cleaned_md_path, "w", encoding="utf-8") as f:
-                    f.write(cleaned_text)
+                    f.write(cleaned_markdown)
 
                 # ── Phase 6: Email ────────────────────────────────────────────
                 t_email = send_transcript_email(ep, plain_transcript_text, cleaned_txt_path, final_text=cleaned_text)

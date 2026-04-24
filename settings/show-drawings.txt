@@ -7,7 +7,7 @@
 
 Animal Spirits | drawings/caricature_drawings/Carlson_and_Batnick_drawing.png
 Ask the Compound | drawings/caricature_drawings/Carlson_and_Duncan_drawing.png
-At the Money | drawings/caricature_drawings/Ritholtz_drawingpng
+At the Money | drawings/caricature_drawings/Ritholtz_drawing.png
 Masters in Business | drawings/caricature_drawings/Ritholtz_drawing.png
 The Compound and Friends | drawings/caricature_drawings/Brown_and_Batnick_drawing.png
 production-crew | drawings/caricature_drawings/production_crew.png

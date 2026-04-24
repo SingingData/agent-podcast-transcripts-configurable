@@ -35,18 +35,40 @@ git clone https://github.com/SingingData/agent-podcast-transcripts-configurable.
 cd agent-podcast-transcripts-configurable
 ```
 
-### 2. Create your Python environment
+### 2. Install Miniconda and create the Python environment
 
-Use your preferred environment manager. Example with pip:
+This repo is set up to run through a Conda environment named `fastai`.
+Install Miniconda first, then create and populate that environment.
+
+Example on macOS:
 
 ```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install --upgrade pip
-python3 -m pip install -r requirements.txt
+brew install --cask miniconda
+conda init zsh
+exec zsh
 ```
 
-If you use conda instead, install the same packages into the environment named in `runtime-operations-config/runtime-config.txt`, or change that file to match your environment.
+If you are not using Homebrew, download Miniconda from the official installer page and complete the shell initialization step for your shell before continuing.
+
+Create the `fastai` environment with Python 3.11:
+
+```bash
+conda create -n fastai python=3.11 -y
+conda activate fastai
+```
+
+Install the required packages into `fastai`:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install fastai
+python -m pip install -r requirements.txt
+```
+
+This matches the default wrapper configuration in:
+- `runtime-operations-config/runtime-config.txt`
+
+If you want to use a different Conda environment name, update that file to match.
 
 ### 3. Create your `.env`
 
