@@ -306,6 +306,7 @@ class RuntimeConfig:
     test_mode_episode_count: int
     test_mode_month: str
     test_mode_month_number: int | None
+    test_mode_skip_title_contains: str
     audio_retention_hours: int
     safe_title_max_len: int
     opening_ad_max_start_seconds: int
@@ -418,6 +419,10 @@ def load_runtime_config():
     service_endpoints = load_key_value_settings(SERVICE_ENDPOINTS_FILE)
     raw_test_mode_month = settings.get("TEST_MODE_MONTH", "").strip()
     test_mode_month_number = parse_test_mode_month(raw_test_mode_month) if raw_test_mode_month else None
+    raw_test_mode_skip_title_contains = os.getenv(
+        "TEST_MODE_SKIP_TITLE_CONTAINS",
+        settings.get("TEST_MODE_SKIP_TITLE_CONTAINS", "")
+    ).strip()
 
     with open(LLM_CLEANUP_PROMPT_FILE, "r", encoding="utf-8") as f:
         llm_cleanup_prompt = f.read()
@@ -441,6 +446,7 @@ def load_runtime_config():
         test_mode_episode_count=int(settings.get("TEST_MODE_EPISODE_COUNT", "1")),
         test_mode_month=raw_test_mode_month,
         test_mode_month_number=test_mode_month_number,
+        test_mode_skip_title_contains=raw_test_mode_skip_title_contains,
         audio_retention_hours=int(settings["AUDIO_RETENTION_HOURS"]),
         safe_title_max_len=int(settings["SAFE_TITLE_MAX_LEN"]),
         opening_ad_max_start_seconds=int(settings["OPENING_AD_MAX_START_SECONDS"]),
@@ -1443,6 +1449,18 @@ def fetch_all_new_episodes(state, config):
                 "TEST_MODE: limiting candidates to the most recent occurrence of "
                 f"{calendar.month_name[config.test_mode_month_number]} "
                 f"({month_start.strftime('%Y-%m')}) — {len(filtered_episodes)} match(es) found."
+            )
+
+        if config.test_mode_skip_title_contains:
+            skip_lower = config.test_mode_skip_title_contains.lower()
+            before_skip = len(filtered_episodes)
+            filtered_episodes = [
+                ep for ep in filtered_episodes
+                if skip_lower not in ep.get("title", "").lower()
+            ]
+            log.info(
+                "TEST_MODE: excluding episodes whose title contains "
+                f"'{config.test_mode_skip_title_contains}' — {before_skip - len(filtered_episodes)} excluded."
             )
 
         selected = filtered_episodes[:config.test_mode_episode_count]
