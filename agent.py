@@ -1692,6 +1692,9 @@ def insert_podcast_start_marker(text, closing_ad_phrases, opening_catch_phrases,
 
     def normalize_for_phrase_match(value):
         value = value.lower()
+        value = re.sub(r"\bdot\s+com\b", " com ", value)
+        value = re.sub(r"\bslash\b", " ", value)
+        value = re.sub(r"[\/._-]+", " ", value)
         value = re.sub(r"[^a-z0-9]+", " ", value)
         return re.sub(r"\s+", " ", value).strip()
 
@@ -1942,9 +1945,6 @@ def format_transcript_html(episode, final_text, drawing_cid=None):
     paragraph_html = "\n".join(paragraph_blocks)
 
     speakers_match = re.search(r"\*\*Speakers:\*\*\s*(.+)", final_text)
-    speakers_html = ""
-    if speakers_match:
-        speakers_html = f'<div class="meta">Speakers: {html.escape(speakers_match.group(1))}</div>'
 
     production_crew_html = ""
     if os.path.exists(PRODUCTION_CREW_DRAWING):
@@ -1961,9 +1961,9 @@ def format_transcript_html(episode, final_text, drawing_cid=None):
     body {{ margin: 0; padding: 0; background: #f5f5f0; font-family: Georgia, "Times New Roman", serif; color: #1a1a1a; }}
     .wrapper {{ max-width: 760px; margin: 40px auto; background: #ffffff; border-radius: 6px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }}
     .header {{ background: #1a1a2e; padding: 36px 48px 28px; color: #ffffff; }}
-    .header .label {{ font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: #9b9bc0; margin-bottom: 10px; }}
+    .header .label {{ font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; font-size: 14px; letter-spacing: 0.8px; text-transform: uppercase; color: #ffffff; margin-bottom: 10px; }}
     .header h1 {{ margin: 0 0 14px; font-size: 24px; font-weight: normal; line-height: 1.35; color: #f0f0f8; }}
-    .header .meta {{ font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; font-size: 13px; color: #9b9bc0; line-height: 1.6; }}
+    .header .meta {{ font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; font-size: 14px; color: #9b9bc0; line-height: 1.6; }}
     .header .readtime {{ display: inline-block; margin-top: 10px; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; font-size: 12px; color: #7b9cdf; letter-spacing: 0.5px; }}
     .header a {{ color: #7b9cdf; text-decoration: none; }}
     .divider {{ height: 3px; background: linear-gradient(90deg, #7b9cdf, #c778e0); }}
@@ -1983,8 +1983,7 @@ def format_transcript_html(episode, final_text, drawing_cid=None):
     <div class="header">
       <div class="label">{episode['podcast']} — Transcript</div>
       <h1>{episode['title']}</h1>
-      <div class="meta">Published: {published_display}<br><a href="{episode['link']}">Listen to episode →</a></div>
-      {speakers_html}
+      <div class="meta">Published: {published_display}{('<br>Speakers: ' + html.escape(speakers_match.group(1))) if speakers_match else ''}<br><a href="{episode['link']}">Listen to episode →</a></div>
       <div class="readtime">📄 {words:,} words · ~{read_min} min read</div>
     </div>
     <div class="divider"></div>
