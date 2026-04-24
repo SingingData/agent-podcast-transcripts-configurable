@@ -239,6 +239,27 @@ def remove_repeated_dotted_letter_runs(text):
     return cleaned, removals
 
 
+def detect_obvious_raw_transcript_junk(text):
+    """Detect obvious transcription junk severe enough to justify retranscription."""
+    if not text:
+        return None
+
+    pattern = re.compile(r"(?<!\w)([A-Za-z])(?:\.\s*\1){7,}\.", re.IGNORECASE)
+    findings = []
+    for match in pattern.finditer(text):
+        original = match.group(0)
+        letter = match.group(1)
+        count = len(re.findall(rf"{re.escape(letter)}\.", original, re.IGNORECASE))
+        findings.append(f"{letter}. x{count}")
+        if len(findings) >= 3:
+            break
+
+    if findings:
+        return "repeated dotted-letter run(s): " + ", ".join(findings)
+
+    return None
+
+
 OPENING_CATCH_PHRASES = load_phrase_list(OPENING_CATCH_PHRASES_FILE)
 OPENING_AD_PHRASES = load_phrase_list(OPENING_AD_PHRASES_FILE)
 CLOSING_AD_PHRASES = load_phrase_list(CLOSING_AD_PHRASES_FILE)
@@ -2563,14 +2584,51 @@ def main():
                 log_resources("Download")
 
                 # ── Phase 2: WhisperX Transcription ───────────────────────────
-                transcript_path, plain_text, whisperx_metrics, aligned_segments, audio_for_diarization = transcribe_with_whisperx(
-                    audio_path, ep["title"], config, 
-                    podcast_name=ep.get("podcast"),
-                    shared_resources=shared_resources,
-                    episode_title=ep.get("title", ""),
-                    episode_summary=ep.get("summary", "")
-                )
-                
+                raw_retranscribe_used = False
+                raw_redownload_used = False
+                while True:
+                    transcript_path, plain_text, whisperx_metrics, aligned_segments, audio_for_diarization = transcribe_with_whisperx(
+                        audio_path, ep["title"], config,
+                        podcast_name=ep.get("podcast"),
+                        shared_resources=shared_resources,
+                        episode_title=ep.get("title", ""),
+                        episode_summary=ep.get("summary", "")
+                    )
+
+                    raw_junk_reason = detect_obvious_raw_transcript_junk(plain_text)
+                    if not raw_junk_reason:
+                        break
+
+                    if not raw_retranscribe_used:
+                        raw_retranscribe_used = True
+                        log.warning(
+                            "Detected obvious raw transcript junk; retranscribing once from cached audio before fallback. "
+                            f"[{raw_junk_reason}]"
+                        )
+                        continue
+
+                    if not raw_redownload_used:
+                        raw_redownload_used = True
+                        if audio_path and os.path.exists(audio_path):
+                            os.remove(audio_path)
+                            log.info(f"Removed cached audio before forced re-download: {audio_path}")
+                        redownload_elapsed, redownload_size_mb = 0.0, size_mb
+                        audio_path, redownload_elapsed, redownload_size_mb = download_audio(ep["audio_url"], ep["title"], config)
+                        t_download += redownload_elapsed
+                        size_mb = redownload_size_mb
+                        log.info(
+                            "Detected obvious raw transcript junk again; re-downloaded audio and retranscribing one final time. "
+                            f"[{raw_junk_reason}]"
+                        )
+                        log.info(f"  ⏱ Phase 1 (Re-download):    {redownload_elapsed:.1f}s ({redownload_size_mb:.1f} MB)")
+                        log_resources("Re-download")
+                        continue
+
+                    raise ValueError(
+                        "Raw transcript junk persisted after retranscribe and re-download: "
+                        f"{raw_junk_reason}"
+                    )
+
                 t_transcribe_total = whisperx_metrics.get("total_transcribe_s", 0)
                 log.info(f"  ⏱ Phase 2 (Total):          {t_transcribe_total:.1f}s")
 
