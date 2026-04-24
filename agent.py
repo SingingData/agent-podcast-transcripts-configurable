@@ -27,6 +27,7 @@ import calendar
 import shutil
 import smtplib
 import logging
+import fcntl
 import requests
 import feedparser
 import threading
@@ -56,6 +57,7 @@ TRANSCRIPT_DIR = os.path.join(BASE_DIR, "transcripts")
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 STATE_BACKUP = os.path.join(STATE_DIR, "state.backup.json")
 LOG_FILE = os.path.join(LOGS_DIR, "agent.log")
+RUN_LOCK_FILE = os.path.join(STATE_DIR, "agent.lock")
 ENV_FILE = os.path.join(os.path.dirname(BASE_DIR), ".env")
 PHRASES_AND_VOCAB_DIR = os.path.join(BASE_DIR, "phrases-and-vocabulary")
 KNOWN_HOSTS_FILE = os.path.join(PHRASES_AND_VOCAB_DIR, "known-hosts-per-podcast.txt")
@@ -265,6 +267,7 @@ class RuntimeConfig:
     download_retries: int
     download_timeout_seconds: int
     download_retry_backoff_base_seconds: int
+    llm_request_timeout_seconds: int
     llm_provider: str | None
     llm_model: str | None
     llm_temperature: float
@@ -399,6 +402,7 @@ def load_runtime_config():
         download_retries=int(settings["DOWNLOAD_RETRIES"]),
         download_timeout_seconds=int(settings["DOWNLOAD_TIMEOUT_SECONDS"]),
         download_retry_backoff_base_seconds=int(settings["DOWNLOAD_RETRY_BACKOFF_BASE_SECONDS"]),
+        llm_request_timeout_seconds=int(settings.get("LLM_REQUEST_TIMEOUT_SECONDS", "120")),
         llm_provider=os.getenv("LLM_PROVIDER"),
         llm_model=os.getenv("LLM_MODEL"),
         llm_temperature=float(settings["LLM_TEMPERATURE"]),
@@ -420,6 +424,47 @@ def log_resources(phase_name):
     mem_mb = get_memory_usage_mb()
     cpu_percent = psutil.cpu_percent(interval=0.1)
     log.info(f"  📊 [{phase_name}] Memory: {mem_mb:.1f} MB | CPU: {cpu_percent:.1f}%")
+
+
+def acquire_run_lock():
+    """Prevent overlapping agent runs from starting concurrently."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+    handle = open(RUN_LOCK_FILE, "a+", encoding="utf-8")
+
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.seek(0)
+        owner = handle.read().strip() or "unknown"
+        log.warning(
+            "Another agent run is already active; exiting to avoid overlap. "
+            f"Lock file: {RUN_LOCK_FILE} | owner: {owner}"
+        )
+        handle.close()
+        return None
+
+    handle.seek(0)
+    handle.truncate()
+    handle.write(json.dumps({"pid": os.getpid(), "started_at": datetime.now().isoformat()}) + "\n")
+    handle.flush()
+    return handle
+
+
+def release_run_lock(handle):
+    if not handle:
+        return
+    try:
+        handle.seek(0)
+        handle.truncate()
+        handle.flush()
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+        try:
+            if os.path.exists(RUN_LOCK_FILE):
+                os.remove(RUN_LOCK_FILE)
+        except OSError:
+            pass
 
 # ── Host Config ──────────────────────────────────────────────────────────────
 
@@ -1706,6 +1751,7 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
 
     log.info(f"Running LLM cleanup pass via {config.llm_provider}...")
     t0 = time.time()
+    llm_timeout = max(1, config.llm_request_timeout_seconds)
 
     try:
         usage = {}
@@ -1734,7 +1780,8 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
                 model=config.llm_model,
                 messages=[{"role": "user", "content": config.llm_cleanup_prompt + text}],
                 max_tokens=int(os.getenv("LLM_MAX_TOKENS")),
-                temperature=config.llm_temperature
+                temperature=config.llm_temperature,
+                timeout=llm_timeout,
             )
             cleaned = response.choices[0].message.content.strip()
             usage = {
@@ -1751,7 +1798,8 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
                 model=config.llm_model,
                 messages=[{"role": "user", "content": config.llm_cleanup_prompt + text}],
                 max_tokens=int(os.getenv("LLM_MAX_TOKENS")),
-                temperature=config.llm_temperature
+                temperature=config.llm_temperature,
+                timeout=llm_timeout,
             )
             cleaned = response.choices[0].message.content.strip()
             usage = {
@@ -1768,7 +1816,8 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
                 model=config.llm_model,
                 messages=[{"role": "user", "content": config.llm_cleanup_prompt + text}],
                 max_tokens=int(os.getenv("LLM_MAX_TOKENS")),
-                temperature=config.llm_temperature
+                temperature=config.llm_temperature,
+                timeout=llm_timeout,
             )
             cleaned = response.choices[0].message.content.strip()
             usage = {
@@ -1795,7 +1844,10 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
         log.warning(f"LLM client library not installed ({e}) — skipping cleanup.")
         return text, {}
     except Exception as e:
-        log.error(f"LLM cleanup failed (non-fatal, using raw transcript): {e}")
+        log.error(
+            "LLM cleanup failed (non-fatal, using raw transcript): "
+            f"{e} [provider={config.llm_provider}, timeout={llm_timeout}s]"
+        )
         return text, {}
 
 def insert_podcast_start_marker(text, closing_ad_phrases, opening_catch_phrases, opening_ad_phrases, config):
@@ -2227,6 +2279,10 @@ def send_alert_email(subject, body):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    run_lock = acquire_run_lock()
+    if not run_lock:
+        return
+
     config = load_runtime_config()
     run_start = time.time()
     log.info("=" * 60)
@@ -2442,6 +2498,7 @@ def main():
         release_shared_whisperx_resources(shared_resources)
         if config.test_mode:
             reset_test_mode_settings()
+        release_run_lock(run_lock)
 
 if __name__ == "__main__":
     main()

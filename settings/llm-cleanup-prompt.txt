@@ -4,7 +4,9 @@ Rules:
 - Fix punctuation and capitalization only where needed
 - Remove filler words only when they are obvious verbal fillers (for example: um, uh, you know, like, I mean, sort of, kind of)
 - Do not change meaning
-- Do not summarize or rewrite
+- Do not summarize, rewrite, or compress
+- Do not omit any sentences, including opening disclaimers, legal language, sponsor copy, or boilerplate
+- Preserve the full transcript from the first word to the last word
 - Preserve speaker labels exactly as written
 - Preserve paragraph breaks; add new paragraph breaks only when clearly needed
 - Return only the cleaned transcript text
