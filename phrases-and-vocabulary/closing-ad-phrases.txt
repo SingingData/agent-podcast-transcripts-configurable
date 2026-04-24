@@ -15,11 +15,3 @@ Learn more at Adobe.com slash do that with Acrobat.
 may maintain positions in the securities discussed in this podcast.
 Learn more at Adobe.com slash do that with Acrobat
 
-
-This repo contains a locally run, configurable podcast transcription agent. Right now it's configured to transcribe all of the Compound shows.
-
-What does it do? This agent transcribes the latest podcast episodes with a local python module, WhisperX, applies deterministic cleanup steps, runs an optional LLM cleanup pass configured to use Grok at the mooment, drops a transcript to your local drive and emails finished transcripts to the email account(s) of your choosing. I'm currently running this agent in an Openclaw harness which give me, amongst other things, the ability to schedule chronological jobs (cron jobs) to check for new episodes and email new episode transcripts whieh it finds them. Note, you don't need to run this within a harness like Openclaw, but it makes it a lot easier.
-
-How is it designed? This agent is written to run locally on a CPU and with minimal token expense. It uses WhisperX which is a relatively beefy local audio model, but if it's too big for your system, you can use faster-whisper model which is smaller. The only time this agent calls external LLM service is to do a final LLM clean-up pass on the transcript. (WhisperX has done most of that already.) But this step is optional and you can disable. Or, the agent can be configured to run the LLM cleanup locally rather than calling a service like Grok or OpenAI. I have it configured to use the most economical of the good LLM's - Grok - which still allows you to use the API calls on an all-you-can-eat plan. Finally, you will note that speaker names are not yet identified in the body of the trasncript, a function called diarization. I plan to extend this to add a diarization step to identify speakers inline. There are some nice local models and local approaches available for this.
-
-To run locally, you need to install the requirements listed below. Note that if you don't already have Python on your machine, I strongly recommend installing Miniconda (details below) and then installing the fastai Python module (also below) to get most of your requirements loaded in one shot with the least trouble and overhead. Ask your LLM for help with these setup steps if needed.
