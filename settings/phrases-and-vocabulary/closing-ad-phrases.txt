@@ -1,6 +1,7 @@
 # Closing advertisement phrases that signal the ad is ending and the podcast is about to begin.
 # One phrase per line. Case-insensitive matching.
 Bloomberg Audio Studios, podcasts, radio, news
+Bloomberg Audio Studios. Podcasts, radio, news.
 Let’s get to the show
 Terms and conditions apply.
 JP Morgan Chase and Company.

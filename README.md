@@ -40,7 +40,9 @@ cd agent-podcast-transcripts-configurable
 This repo is set up to run through a Conda environment named `fastai`.
 Install Miniconda first, then create and populate that environment.
 
-Example on macOS:
+#### macOS
+
+If you use Homebrew:
 
 ```bash
 brew install --cask miniconda
@@ -64,6 +66,28 @@ python -m pip install --upgrade pip
 python -m pip install fastai
 python -m pip install -r requirements.txt
 ```
+
+#### Windows
+
+Download and install Miniconda from the official Miniconda installer page.
+During install, let Miniconda register its shell integration, then open an Anaconda Prompt.
+
+Create the `fastai` environment with Python 3.11:
+
+```bat
+conda create -n fastai python=3.11 -y
+conda activate fastai
+```
+
+Install the required packages into `fastai`:
+
+```bat
+python -m pip install --upgrade pip
+python -m pip install fastai
+python -m pip install -r requirements.txt
+```
+
+Install `ffmpeg` on Windows as well, and make sure it is available on your `PATH` before running the agent.
 
 This matches the default wrapper configuration in:
 - `runtime-operations-config/runtime-config.txt`
