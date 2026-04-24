@@ -68,10 +68,32 @@ python -m pip install fastai
 python -m pip install -r requirements.txt
 ```
 
-#### If you are running on Windows OS
+#### If you are running on Windows
 
-Download and install Miniconda from the official Miniconda installer page.
-During install, let Miniconda register its shell integration, then open an Anaconda Prompt.
+You can install Miniconda from the command line if you prefer not to download it manually in a browser.
+
+If you are using Command Prompt, these commands download the latest 64-bit Miniconda installer, install it for your user account, and then remove the installer:
+
+```bat
+curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe --output .\Miniconda3-latest-Windows-x86_64.exe
+start /wait "" .\Miniconda3-latest-Windows-x86_64.exe /InstallationType=JustMe /RegisterPython=0 /S /D=%UserProfile%\Miniconda3
+del .\Miniconda3-latest-Windows-x86_64.exe
+```
+
+If you prefer PowerShell, you can use:
+
+```powershell
+curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe --output .\Miniconda3-latest-Windows-x86_64.exe
+Start-Process .\Miniconda3-latest-Windows-x86_64.exe -ArgumentList '/InstallationType=JustMe','/RegisterPython=0','/S',"/D=$env:USERPROFILE\Miniconda3" -Wait
+Remove-Item .\Miniconda3-latest-Windows-x86_64.exe
+```
+
+After installation finishes, open a new Anaconda Prompt (or a new Command Prompt/PowerShell window if `conda` is now available) and verify the install:
+
+```bat
+conda --version
+conda list
+```
 
 Create the `fastai` environment with Python 3.11:
 
