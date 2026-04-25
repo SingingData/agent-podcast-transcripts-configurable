@@ -306,10 +306,13 @@ Outgoing transcript emails now include a correction request at the bottom of bot
 The exact text is:
 
 ```txt
-Help us catch transcription errors. Reply to this email. In the body of your reply email, start with the word "correction:", then type the actual transcript word or phrase that was mis-transcribed, a back slash "\", and the correct way to transcribe this word of phrase.
+Help us catch transcription errors.
+Reply to this email. In the body of your reply email, start with the word "correction:", then type the actual transcript word or phrase that was mis-transcribed, a back slash "\", and the correct way to transcribe this word of phrase.
+These will be human reviewed before implementing. Thank you!
 ```
 
 A separate correction-ingest job reads reply emails and captures only replies whose first non-empty line starts with `correction:`.
+Replies may come from any sender, including the same mailbox used to send or test transcript emails, as long as the reply matches a tracked transcript email.
 
 What gets stored for each accepted correction:
 - episode title
