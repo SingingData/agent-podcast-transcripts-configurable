@@ -83,10 +83,11 @@ CORRECTION_REQUEST_TEXT = (
 )
 WEEKLY_SUMMARY_PROMPT_TEMPLATE = """You are writing a weekly roundup email for podcast transcripts.
 
-Write a concise summary of this episode in no more than {max_paragraphs} paragraphs.
-Make it specific and information-dense, not generic.
-Include the most important people, companies, market views, facts, claims, events, and concrete takeaways mentioned.
+Write a detailed summary of this episode in no more than {max_paragraphs} paragraphs.
+Make it specific, information-dense, and richer in detail rather than generic.
+Include the most important people, companies, market views, facts, claims, events, examples, debates, anecdotes, and concrete takeaways mentioned.
 If hosts or guests are identifiable from the transcript, name them.
+Prefer precise details over broad generalities whenever the transcript supports them.
 Do not use bullet points.
 Do not add a greeting or sign-off.
 Return only the summary text.
@@ -534,7 +535,7 @@ def load_runtime_config():
         weekly_summary_day=settings.get("WEEKLY_SUMMARY_DAY", "FRIDAY").strip().upper() or "FRIDAY",
         weekly_summary_lookback_days=max(1, int(settings.get("WEEKLY_SUMMARY_LOOKBACK_DAYS", "7"))),
         weekly_summary_test_lookback_days=max(1, int(settings.get("WEEKLY_SUMMARY_TEST_LOOKBACK_DAYS", "7"))),
-        weekly_summary_max_paragraphs_per_episode=max(1, int(settings.get("WEEKLY_SUMMARY_MAX_PARAGRAPHS_PER_EPISODE", "3"))),
+        weekly_summary_max_paragraphs_per_episode=max(1, int(settings.get("WEEKLY_SUMMARY_MAX_PARAGRAPHS_PER_EPISODE", "4"))),
         weekly_summary_save_text_copy=settings.get("WEEKLY_SUMMARY_SAVE_TEXT_COPY", "true").lower() == "true",
         weekly_summary_save_html_copy=settings.get("WEEKLY_SUMMARY_SAVE_HTML_COPY", "true").lower() == "true",
         weekly_summary_email_subject_prefix=settings.get("WEEKLY_SUMMARY_EMAIL_SUBJECT_PREFIX", "Compound Shows Summary").strip() or "Compound Shows Summary",
@@ -1603,12 +1604,21 @@ def summarize_episode_for_weekly_summary(entry, transcript_text, config):
 
     t0 = time.time()
     summary_text, usage = run_llm_text_request(prompt, config, max_output_tokens=max_output_tokens)
+    summary_text, vocabulary_replacements = apply_vocabulary_corrections(summary_text, config.vocabulary_corrections)
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n", summary_text) if part.strip()]
     summary_text = "\n\n".join(paragraphs[:config.weekly_summary_max_paragraphs_per_episode]).strip()
     if not summary_text:
         raise ValueError(f"Weekly summary came back empty for episode '{entry.get('title', '')}'.")
 
     elapsed = time.time() - t0
+    if vocabulary_replacements:
+        replacement_summary = ", ".join(
+            f"{item['from']}→{item['to']} x{item['count']}" for item in vocabulary_replacements
+        )
+        log.info(
+            "Weekly summary vocabulary corrections applied — "
+            f"episode='{entry.get('title', '')}' | {replacement_summary}"
+        )
     log.info(
         "Weekly episode summary complete — "
         f"episode='{entry.get('title', '')}' | tokens: {usage.get('input_tokens', 0)} in / "
@@ -1640,7 +1650,7 @@ def build_weekly_summary_bodies(subject, summaries, period):
         "    .episode:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }",
         "    h2 { margin-bottom: 6px; font-size: 22px; }",
         "    .published { color: #5e6573; font-size: 14px; margin-bottom: 14px; }",
-        "    p { margin: 0 0 14px; }",
+        "    p { margin: 0 0 14px; font-size: 18px; }",
         "  </style>",
         "</head>",
         "<body>",

@@ -272,7 +272,7 @@ If any qualifying transcripts exist, the agent sends a single weekly roundup ema
 Compound Shows Summary - Week ending April 25, 2026
 ```
 
-The weekly summary email body includes every qualifying episode from that lookback window. Each section contains the episode title and a no-more-than-3-paragraph summary intended to mention the important people, facts, companies, themes, claims, and other notable details from that episode.
+The weekly summary email body includes every qualifying episode from that lookback window. Each section contains the episode title and a no-more-than-4-paragraph summary intended to mention the important people, facts, companies, themes, claims, events, examples, and other notable details from that episode, with more detail than the earlier version of the feature. After each episode summary is generated, the agent also runs the summary text through `phrases-and-vocabulary/vocabulary-corrections.txt` before saving and emailing it. In the HTML version of the email, the summary body text is rendered at a larger font size for readability.
 
 The agent records send history in `state/state.json` and will send at most one weekly summary email per `week_ending_YYYY-MM-DD` window, even if the agent is run multiple times that same day or retried after a failure.
 
@@ -298,7 +298,7 @@ ENABLE_WEEKLY_SUMMARY=true
 WEEKLY_SUMMARY_DAY=FRIDAY
 WEEKLY_SUMMARY_LOOKBACK_DAYS=7
 WEEKLY_SUMMARY_TEST_LOOKBACK_DAYS=7
-WEEKLY_SUMMARY_MAX_PARAGRAPHS_PER_EPISODE=3
+WEEKLY_SUMMARY_MAX_PARAGRAPHS_PER_EPISODE=4
 WEEKLY_SUMMARY_SAVE_TEXT_COPY=true
 WEEKLY_SUMMARY_SAVE_HTML_COPY=true
 WEEKLY_SUMMARY_EMAIL_SUBJECT_PREFIX=Compound Shows Summary
