@@ -21,9 +21,11 @@ To run locally, you need to install the requirements listed below. Note that if 
 - `agent.py` — main transcription agent
 - `run-agent.sh` — wrapper to run the agent through the configured environment
 - `run-monitor.sh` — wrapper to run the monitor
+- `run-corrections-ingest.sh` — wrapper to run the weekly correction-ingest job
 - `runtime-operations-config/runtime-config.txt` — launcher settings
 - `settings/` — editable runtime settings
-- `phrases-and-vocabulary/` — phrase lists, host names, and vocabulary corrections
+- `phrases-and-vocabulary/` — phrase lists, host names, vocabulary corrections, and local correction-request files
+- `phrases-and-vocabulary/correction-requests/` — local per-show correction submissions captured from reply emails (gitignored)
 - `requirements.txt` — Python package dependencies
 - `.env.example` — environment variable template
 
@@ -187,9 +189,11 @@ Minimum likely required values:
 - email credentials and sender settings in `.env`
 - `TRANSCRIPT_RECIPIENTS` for one or more regular-run recipients (comma-separated)
 - optional `TEST_RUN_RECIPIENTS` for one or more test-run recipients (comma-separated; if not set, test runs automatically fall back to `TRANSCRIPT_RECIPIENTS`)
+- for correction ingest, either `IMAP_USERNAME` / `IMAP_PASSWORD`, or reuse `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD`
+- optional `IMAP_HOST` and `IMAP_PORT` if you are not using Gmail IMAP defaults
 
 Email/service configuration is split across two places:
-- `.env` holds provider keys, email credentials, sender info, and recipient lists
+- `.env` holds provider keys, email credentials, sender info, recipient lists, and optional IMAP credentials for reply ingestion
 - `settings/service-endpoints.txt` holds service endpoints such as `SMTP_HOST` and `SMTP_PORT`
 
 ### 4. Check runtime launcher settings
@@ -203,6 +207,7 @@ Defaults are now portable:
 - `CONDA_ENV=fastai`
 - `PYTHON_ENTRY=agent.py`
 - `MONITOR_ENTRY=monitoring/monitor.py`
+- `CORRECTION_INGEST_ENTRY=monitoring/fetch_corrections.py`
 
 The wrapper scripts derive the repo working directory automatically, so you do not need to hard-code your local path.
 
@@ -293,6 +298,49 @@ TEST_MODE_MONTH=
 ```
 
 If the run is interrupted before cleanup, reset those values manually.
+
+## Correction reply capture
+
+Outgoing transcript emails now include a correction request at the bottom of both the plain-text and HTML email bodies.
+
+The exact text is:
+
+```txt
+Help us catch transcription errors. Reply to this email. In the body of your reply email, start with the word "correction:", then type the actual transcript word or phrase that was mis-transcribed, a back slash "\", and the correct way to transcribe this word of phrase.
+```
+
+A separate correction-ingest job reads reply emails and captures only replies whose first non-empty line starts with `correction:`.
+
+What gets stored for each accepted correction:
+- episode title
+- sender name
+- reply body
+
+Storage location:
+- `phrases-and-vocabulary/correction-requests/corrections-submission-animal-spirits.txt`
+- `phrases-and-vocabulary/correction-requests/corrections-submission-the-compound-and-friends.txt`
+- `phrases-and-vocabulary/correction-requests/corrections-submission-ask-the-compound.txt`
+- `phrases-and-vocabulary/correction-requests/corrections-submission-masters-in-business.txt`
+- `phrases-and-vocabulary/correction-requests/corrections-submission-at-the-money.txt`
+
+Each accepted correction is appended as a single `|`-separated line. These files are local-only and are ignored by git.
+
+### Running the correction-ingest job manually
+
+```bash
+./run-corrections-ingest.sh
+```
+
+Dry run:
+
+```bash
+./run-corrections-ingest.sh --dry-run
+```
+
+### Scheduled correction-ingest behavior
+
+The correction-ingest job is intended to run weekly on Saturday.
+It skips itself unless transcript emails were sent in the prior 7 days.
 
 ## Running the monitor
 

@@ -6,3 +6,4 @@ CONDA_BIN=conda
 CONDA_ENV=fastai
 PYTHON_ENTRY=agent.py
 MONITOR_ENTRY=monitoring/monitor.py
+CORRECTION_INGEST_ENTRY=monitoring/fetch_corrections.py

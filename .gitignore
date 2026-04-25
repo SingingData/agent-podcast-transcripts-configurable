@@ -45,3 +45,10 @@ transcripts/.DS_Store
 
 !runtime-operations-config/
 !runtime-operations-config/runtime-config.txt
+
+# Local correction submissions
+phrases-and-vocabulary/correction-requests/corrections-submission-animal-spirits.txt
+phrases-and-vocabulary/correction-requests/corrections-submission-the-compound-and-friends.txt
+phrases-and-vocabulary/correction-requests/corrections-submission-ask-the-compound.txt
+phrases-and-vocabulary/correction-requests/corrections-submission-masters-in-business.txt
+phrases-and-vocabulary/correction-requests/corrections-submission-at-the-money.txt
