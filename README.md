@@ -1,6 +1,6 @@
 # agent-podcast-transcripts-configurable
 
-This repo contains a locally run, configurable podcast transcription agent.  Right now it's configured to transcribe all of the Compound shows.
+This repo contains a locally run, configurable podcast transcription agent.  Right now it's configured to transcribe all of the Compound shows and send out the transcriptions in seperate emails along with a weekly 4-paragraph summary of each episode from that week.
 
 **What does it do?**  This agent transcribes the latest podcast episodes with a local Python module, WhisperX, applies deterministic cleanup steps, runs an optional LLM cleanup pass configured to use Grok at the moment, drops a transcript to your local drive, and emails finished transcripts to the email account(s) of your choosing.  I'm currently running this agent in an OpenClaw harness, which gives me, amongst many other things, the ability to schedule cron jobs to check for new episodes and email new episode transcripts when it finds them.  Note, you don't need to run this within a harness like OpenClaw, but it makes it a lot easier.
 
