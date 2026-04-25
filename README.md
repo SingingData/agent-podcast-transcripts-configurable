@@ -2,7 +2,7 @@
 
 This repo contains a locally run, configurable podcast transcription agent.  Right now it's configured to transcribe all of the Compound shows.
 
-**What does it do?**  This agent transcribes the latest podcast episodes with a local python module, WhisperX, applies deterministic cleanup steps, runs an optional LLM cleanup pass configured to use Grok at the mooment, drops a transcript to your local drive and emails finished transcripts to the email account(s) of your choosing.  I'm currently running this agent in an Openclaw harness which give me, amongst many other things, the ability to schedule chronological jobs (cron jobs) to check for new episodes and email new episode transcripts whieh it finds them.  Note, you don't need to run this within a harness like Openclaw, but it makes it a lot easier. 
+**What does it do?**  This agent transcribes the latest podcast episodes with a local Python module, WhisperX, applies deterministic cleanup steps, runs an optional LLM cleanup pass configured to use Grok at the moment, drops a transcript to your local drive, and emails finished transcripts to the email account(s) of your choosing.  I'm currently running this agent in an OpenClaw harness, which gives me, amongst many other things, the ability to schedule cron jobs to check for new episodes and email new episode transcripts when it finds them.  Note, you don't need to run this within a harness like OpenClaw, but it makes it a lot easier.
 
 **How is it designed?** This agent is written to run locally on a CPU and with minimal token expense. It uses WhisperX which is a relatively beefy local audio model, but if it's too big for your system, you can use faster-whisper model which is smaller.  The only time this agent calls external LLM service is to do a final LLM clean-up pass on the transcript. (WhisperX has done most of that already.) But this step is optional and you can disable.  Or, the agent can be configured to run the LLM cleanup locally rather than calling a service like Grok or OpenAI. I have it configured to use the most economical of the good LLM's - Grok - which still allows you to use the API calls on an all-you-can-eat plan.  Finally, you will note that speaker names are not yet identified in the body of the trasncript, a function called diarization.  I plan to extend this to add a diarization step to identify speakers inline.  There are some nice local models and local approaches available for this.  
 
@@ -184,9 +184,13 @@ Minimum likely required values:
 - `LLM_PROVIDER`
 - `LLM_MODEL`
 - API key for the provider you selected
-- SMTP/email settings
+- email credentials and sender settings in `.env`
 - `TRANSCRIPT_RECIPIENTS` for one or more regular-run recipients (comma-separated)
-- optional `TEST_RUN_RECIPIENTS` for one or more test-run recipients (comma-separated; defaults to `TRANSCRIPT_RECIPIENTS` if not set)
+- optional `TEST_RUN_RECIPIENTS` for one or more test-run recipients (comma-separated; if not set, test runs automatically fall back to `TRANSCRIPT_RECIPIENTS`)
+
+Email/service configuration is split across two places:
+- `.env` holds provider keys, email credentials, sender info, and recipient lists
+- `settings/service-endpoints.txt` holds service endpoints such as `SMTP_HOST` and `SMTP_PORT`
 
 ### 4. Check runtime launcher settings
 
@@ -245,14 +249,16 @@ TEST_MODE_MONTH=
 ```
 
 What test mode does:
-- processes only the most recent `TEST_MODE_EPISODE_COUNT` matching episodes instead of the normal selection flow
+- bypasses the normal new-episode selection flow and instead builds a shared candidate pool across all matching feeds
+- processes only the most recent `TEST_MODE_EPISODE_COUNT` matching episodes from that shared pool (not per show)
 - keeps intermediate transcript artifacts that are useful for inspection and debugging
 - sends transcript emails to `TEST_RUN_RECIPIENTS` during test runs only; if that variable is unset, it falls back to `TRANSCRIPT_RECIPIENTS`
 
-Optional month selector:
+Optional selectors:
 - leave `TEST_MODE_MONTH=` blank to use the default behavior and pull the most recent episodes
 - set `TEST_MODE_MONTH` to a month name or abbreviation such as `January`, `Jan`, `February`, or `Feb` to pull test episodes from the most recent occurrence of that month within the last 12 months
-- after the run finishes, test mode settings are automatically reset to:
+- optionally set `TEST_MODE_SKIP_TITLE_CONTAINS` to exclude test candidates whose title contains a given substring
+- after the run finishes successfully, test mode settings are automatically reset to:
 
 ```txt
 TEST_MODE=false
@@ -274,15 +280,19 @@ Final deliverables written in all modes:
 
 Recommended workflow:
 1. set `TEST_MODE=true`
-2. set `TEST_MODE_EPISODE_COUNT` to the number of recent episodes you want to inspect
-3. run `./run-agent.sh` or `python3 agent.py`
-4. review the intermediate files in `transcripts/`
-5. revert to normal mode when finished:
+2. set `TEST_MODE_EPISODE_COUNT` to the number of recent episodes you want to inspect across all matching feeds
+3. optionally set `TEST_MODE_MONTH` and/or `TEST_MODE_SKIP_TITLE_CONTAINS` if you want to narrow the candidate pool
+4. run `./run-agent.sh` or `python3 agent.py`
+5. review the intermediate files in `transcripts/`
+6. confirm the settings were automatically restored after the run:
 
 ```txt
 TEST_MODE=false
 TEST_MODE_EPISODE_COUNT=1
+TEST_MODE_MONTH=
 ```
+
+If the run is interrupted before cleanup, reset those values manually.
 
 ## Running the monitor
 
