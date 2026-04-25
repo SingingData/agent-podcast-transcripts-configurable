@@ -33,7 +33,8 @@ import feedparser
 import threading
 import gc
 import psutil
-from datetime import datetime
+import unicodedata
+from datetime import datetime, timedelta, time as dt_time
 from dataclasses import dataclass
 from email.utils import make_msgid
 from email import encoders
@@ -73,12 +74,28 @@ VOCABULARY_CORRECTIONS_FILE = os.path.join(PHRASES_AND_VOCAB_DIR, "vocabulary-co
 SHOW_DRAWINGS_FILE = os.path.join(SETTINGS_DIR, "show-drawings.txt")
 PRODUCTION_CREW_DRAWING = os.path.join(BASE_DIR, "drawings", "caricature_drawings", "production_crew_drawing.png")
 TRANSCRIPT_EMAIL_SENT_LOG_FILE = os.path.join(STATE_DIR, "transcript-email-sent-log.jsonl")
+WEEKLY_SUMMARY_LOG_FILE = os.path.join(STATE_DIR, "weekly-summary-log.jsonl")
 CORRECTION_REQUEST_TEXT = (
     'Help us catch transcription errors.\n'
     'Reply to this email. In the body of your reply email, start with the word "correction:", then type the actual transcript word '
     'or phrase that was mis-transcribed, a back slash "\\", and the correct way to transcribe this word of phrase.\n'
     'These will be human reviewed before implementing. Thank you!'
 )
+WEEKLY_SUMMARY_PROMPT_TEMPLATE = """You are writing a weekly roundup email for podcast transcripts.
+
+Write a concise summary of this episode in no more than {max_paragraphs} paragraphs.
+Make it specific and information-dense, not generic.
+Include the most important people, companies, market views, facts, claims, events, and concrete takeaways mentioned.
+If hosts or guests are identifiable from the transcript, name them.
+Do not use bullet points.
+Do not add a greeting or sign-off.
+Return only the summary text.
+
+Episode title: {title}
+Published date: {published}
+
+Transcript:
+"""
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -335,6 +352,15 @@ class RuntimeConfig:
     test_mode_month: str
     test_mode_month_number: int | None
     test_mode_skip_title_contains: str
+    weekly_summary_test_mode: bool
+    enable_weekly_summary: bool
+    weekly_summary_day: str
+    weekly_summary_lookback_days: int
+    weekly_summary_test_lookback_days: int
+    weekly_summary_max_paragraphs_per_episode: int
+    weekly_summary_save_text_copy: bool
+    weekly_summary_save_html_copy: bool
+    weekly_summary_email_subject_prefix: str
     audio_retention_hours: int
     safe_title_max_len: int
     opening_ad_max_start_seconds: int
@@ -381,6 +407,16 @@ TEST_MODE_MONTH_LOOKUP = {
     "december": 12,
 }
 
+WEEKDAY_NAME_LOOKUP = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
 
 def parse_test_mode_month(value):
     normalized = re.sub(r"[^a-z]", "", (value or "").lower())
@@ -425,6 +461,8 @@ def reset_test_mode_settings():
         "TEST_MODE": "false",
         "TEST_MODE_EPISODE_COUNT": "1",
         "TEST_MODE_MONTH": "",
+        "WEEKLY_SUMMARY_TEST_MODE": "false",
+        "WEEKLY_SUMMARY_TEST_LOOKBACK_DAYS": "7",
     }
 
     with open(TRANSCRIPTION_SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -452,7 +490,10 @@ def reset_test_mode_settings():
     with open(TRANSCRIPTION_SETTINGS_FILE, "w", encoding="utf-8") as f:
         f.writelines(updated_lines)
 
-    log.info("Reset test-mode settings to defaults: TEST_MODE=false, TEST_MODE_EPISODE_COUNT=1, TEST_MODE_MONTH=")
+    log.info(
+        "Reset test-mode settings to defaults: TEST_MODE=false, TEST_MODE_EPISODE_COUNT=1, "
+        "TEST_MODE_MONTH=, WEEKLY_SUMMARY_TEST_MODE=false, WEEKLY_SUMMARY_TEST_LOOKBACK_DAYS=7"
+    )
 
 
 def load_runtime_config():
@@ -488,6 +529,15 @@ def load_runtime_config():
         test_mode_month=raw_test_mode_month,
         test_mode_month_number=test_mode_month_number,
         test_mode_skip_title_contains=raw_test_mode_skip_title_contains,
+        weekly_summary_test_mode=settings.get("WEEKLY_SUMMARY_TEST_MODE", "false").lower() == "true",
+        enable_weekly_summary=settings.get("ENABLE_WEEKLY_SUMMARY", "true").lower() == "true",
+        weekly_summary_day=settings.get("WEEKLY_SUMMARY_DAY", "FRIDAY").strip().upper() or "FRIDAY",
+        weekly_summary_lookback_days=max(1, int(settings.get("WEEKLY_SUMMARY_LOOKBACK_DAYS", "7"))),
+        weekly_summary_test_lookback_days=max(1, int(settings.get("WEEKLY_SUMMARY_TEST_LOOKBACK_DAYS", "7"))),
+        weekly_summary_max_paragraphs_per_episode=max(1, int(settings.get("WEEKLY_SUMMARY_MAX_PARAGRAPHS_PER_EPISODE", "3"))),
+        weekly_summary_save_text_copy=settings.get("WEEKLY_SUMMARY_SAVE_TEXT_COPY", "true").lower() == "true",
+        weekly_summary_save_html_copy=settings.get("WEEKLY_SUMMARY_SAVE_HTML_COPY", "true").lower() == "true",
+        weekly_summary_email_subject_prefix=settings.get("WEEKLY_SUMMARY_EMAIL_SUBJECT_PREFIX", "Compound Shows Summary").strip() or "Compound Shows Summary",
         audio_retention_hours=int(settings["AUDIO_RETENTION_HOURS"]),
         safe_title_max_len=int(settings["SAFE_TITLE_MAX_LEN"]),
         opening_ad_max_start_seconds=int(settings["OPENING_AD_MAX_START_SECONDS"]),
@@ -1265,8 +1315,15 @@ def load_state():
         data["processed_guids"] = set(data.get("processed_guids", []))
         data.setdefault("episodes", [])
         data.setdefault("retry_queue", [])
+        data.setdefault("weekly_summary_history", {})
         return data
-    return {"processed_guids": set(), "last_run": None, "episodes": [], "retry_queue": []}
+    return {
+        "processed_guids": set(),
+        "last_run": None,
+        "episodes": [],
+        "retry_queue": [],
+        "weekly_summary_history": {},
+    }
 
 def save_state(state):
     serialisable = dict(state)
@@ -1276,6 +1333,532 @@ def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(serialisable, f, indent=2)
     log.info("State saved.")
+
+
+def parse_datetime_value(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        pass
+
+    try:
+        from email.utils import parsedate_to_datetime
+
+        parsed = parsedate_to_datetime(value)
+        if parsed.tzinfo is not None:
+            return parsed.astimezone().replace(tzinfo=None)
+        return parsed
+    except Exception:
+        return None
+
+
+def normalize_filename_token(value):
+    normalized = unicodedata.normalize("NFKD", (value or "").replace("\xa0", " "))
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "", ascii_text.lower())
+
+
+def resolve_final_transcript_path(entry, config):
+    existing = entry.get("final_transcript_path")
+    if existing and os.path.exists(existing):
+        return existing
+
+    safe_title = make_safe_title(entry.get("title", ""), config)
+    direct_path = os.path.join(TRANSCRIPT_DIR, f"final_cleaned_{safe_title}.txt")
+    if os.path.exists(direct_path):
+        return direct_path
+
+    desired = normalize_filename_token(safe_title)
+    if not desired:
+        return None
+
+    for filename in os.listdir(TRANSCRIPT_DIR):
+        if not filename.startswith("final_cleaned_") or not filename.endswith(".txt"):
+            continue
+        candidate_stem = filename[len("final_cleaned_"):-4]
+        candidate_norm = normalize_filename_token(candidate_stem)
+        if candidate_norm == desired or desired in candidate_norm or candidate_norm in desired:
+            return os.path.join(TRANSCRIPT_DIR, filename)
+
+    return None
+
+
+def should_run_weekly_summary(now, config):
+    if config.weekly_summary_test_mode:
+        return True
+
+    if not config.enable_weekly_summary:
+        return False
+
+    weekday_index = WEEKDAY_NAME_LOOKUP.get(config.weekly_summary_day.lower())
+    if weekday_index is None:
+        raise ValueError(f"Unsupported WEEKLY_SUMMARY_DAY '{config.weekly_summary_day}'.")
+    return now.weekday() == weekday_index
+
+
+def get_weekly_summary_period(now, config):
+    weekday_index = WEEKDAY_NAME_LOOKUP.get(config.weekly_summary_day.lower())
+    if weekday_index is None:
+        raise ValueError(f"Unsupported WEEKLY_SUMMARY_DAY '{config.weekly_summary_day}'.")
+
+    days_since_summary_day = (now.weekday() - weekday_index) % 7
+    week_ending_date = (now - timedelta(days=days_since_summary_day)).date()
+    lookback_days = (
+        config.weekly_summary_test_lookback_days
+        if config.weekly_summary_test_mode
+        else config.weekly_summary_lookback_days
+    )
+    window_start_date = week_ending_date - timedelta(days=lookback_days - 1)
+    window_start = datetime.combine(window_start_date, dt_time.min)
+    window_end = datetime.combine(week_ending_date, dt_time.max)
+    week_key = f"week_ending_{week_ending_date.isoformat()}"
+    return {
+        "week_key": week_key,
+        "week_ending_date": week_ending_date,
+        "week_ending_label": week_ending_date.strftime("%B %d, %Y").replace(" 0", " "),
+        "window_start": window_start,
+        "window_end": window_end,
+        "lookback_days": lookback_days,
+    }
+
+
+def get_weekly_summary_history_entry(state, week_key):
+    history = state.setdefault("weekly_summary_history", {})
+    return history.get(week_key)
+
+
+def record_weekly_summary_sent(state, period, recipients, summaries, subject, txt_path, html_path, now, llm_usage, timing, summary_test_mode):
+    history = state.setdefault("weekly_summary_history", {})
+    history[period["week_key"]] = {
+        "sent_at": now.isoformat(),
+        "subject": subject,
+        "summary_test_mode": summary_test_mode,
+        "window_start": period["window_start"].isoformat(),
+        "window_end": period["window_end"].isoformat(),
+        "episode_count": len(summaries),
+        "recipients": recipients,
+        "text_path": txt_path,
+        "html_path": html_path,
+        "llm_usage": llm_usage,
+        "timing": timing,
+    }
+
+
+def format_week_ending_label(now):
+    return now.strftime("%B %d, %Y").replace(" 0", " ")
+
+
+def get_weekly_summary_candidates(state, config, now=None):
+    now = now or datetime.now()
+    period = get_weekly_summary_period(now, config)
+    deduped = {}
+
+    for entry in state.get("episodes", []):
+        processed_at = parse_datetime_value(entry.get("processed_at"))
+        if processed_at is None or not (period["window_start"] <= processed_at <= period["window_end"]):
+            continue
+
+        published_at = parse_datetime_value(entry.get("published_at") or entry.get("published"))
+        key = entry.get("guid") or f"{entry.get('title','')}|{entry.get('published','')}"
+        current = deduped.get(key)
+        if current and current["processed_at_dt"] >= processed_at:
+            continue
+
+        candidate = dict(entry)
+        candidate["published_dt"] = published_at
+        candidate["processed_at_dt"] = processed_at
+        candidate["transcript_path"] = resolve_final_transcript_path(candidate, config)
+        deduped[key] = candidate
+
+    results = [entry for entry in deduped.values() if entry.get("transcript_path")]
+    results.sort(key=lambda entry: (entry["processed_at_dt"], entry.get("published_dt") or datetime.min), reverse=True)
+    return results
+
+
+def build_weekly_summary_prompt(entry, transcript_text, config):
+    return WEEKLY_SUMMARY_PROMPT_TEMPLATE.format(
+        max_paragraphs=config.weekly_summary_max_paragraphs_per_episode,
+        title=entry.get("title", "Unknown Episode"),
+        published=(entry.get("published_dt") or datetime.now()).strftime("%Y-%m-%d"),
+    ) + transcript_text
+
+
+def get_weekly_summary_recipients():
+    return parse_recipient_list(
+        os.getenv("TRANSCRIPT_RECIPIENTS") or os.getenv("TRANSCRIPT_RECIPIENT_PATTY")
+    )
+
+
+def run_llm_text_request(request_content, config, max_output_tokens):
+    llm_timeout = max(1, config.llm_request_timeout_seconds)
+
+    if config.llm_provider == "anthropic":
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        message = client.messages.create(
+            model=config.llm_model,
+            max_tokens=max_output_tokens,
+            temperature=config.llm_temperature,
+            messages=[{"role": "user", "content": request_content}],
+        )
+        text = message.content[0].text.strip()
+        usage = {
+            "provider": "anthropic",
+            "model": config.llm_model,
+            "input_tokens": message.usage.input_tokens,
+            "output_tokens": message.usage.output_tokens,
+            "total_tokens": message.usage.input_tokens + message.usage.output_tokens,
+        }
+        return text, usage
+
+    if config.llm_provider == "openai":
+        import openai
+
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"), max_retries=0)
+        response = client.chat.completions.create(
+            model=config.llm_model,
+            messages=[{"role": "user", "content": request_content}],
+            max_tokens=max_output_tokens,
+            temperature=config.llm_temperature,
+            timeout=llm_timeout,
+        )
+        text = response.choices[0].message.content.strip()
+        usage = {
+            "provider": "openai",
+            "model": config.llm_model,
+            "input_tokens": response.usage.prompt_tokens,
+            "output_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
+        return text, usage
+
+    if config.llm_provider in ("grok", "xai"):
+        import openai
+
+        client = openai.OpenAI(
+            api_key=os.getenv("XAI_API_KEY"),
+            base_url=config.service_endpoints["XAI_BASE_URL"],
+            max_retries=0,
+        )
+        response = client.chat.completions.create(
+            model=config.llm_model,
+            messages=[{"role": "user", "content": request_content}],
+            max_tokens=max_output_tokens,
+            temperature=config.llm_temperature,
+            timeout=llm_timeout,
+        )
+        text = response.choices[0].message.content.strip()
+        usage = {
+            "provider": "grok",
+            "model": config.llm_model,
+            "input_tokens": response.usage.prompt_tokens,
+            "output_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
+        return text, usage
+
+    if config.llm_provider == "perplexity":
+        import openai
+
+        client = openai.OpenAI(
+            api_key=os.getenv("PERPLEXITY_API_KEY"),
+            base_url=config.service_endpoints["PERPLEXITY_BASE_URL"],
+            max_retries=0,
+        )
+        response = client.chat.completions.create(
+            model=config.llm_model,
+            messages=[{"role": "user", "content": request_content}],
+            max_tokens=max_output_tokens,
+            temperature=config.llm_temperature,
+            timeout=llm_timeout,
+        )
+        text = response.choices[0].message.content.strip()
+        usage = {
+            "provider": "perplexity",
+            "model": config.llm_model,
+            "input_tokens": response.usage.prompt_tokens,
+            "output_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
+        return text, usage
+
+    raise ValueError(f"Unsupported LLM provider for weekly summary: {config.llm_provider}")
+
+
+def summarize_episode_for_weekly_summary(entry, transcript_text, config):
+    if config.llm_provider == "none":
+        raise ValueError("Weekly summary requires an LLM provider; LLM_PROVIDER=none is not supported.")
+
+    prompt = build_weekly_summary_prompt(entry, transcript_text, config)
+    max_output_tokens = min(int(os.getenv("LLM_MAX_TOKENS", "2500")), 2500)
+    estimated_input_tokens = max(1, (len(prompt) + 3) // 4)
+    log.info(
+        "Weekly summary request estimate — "
+        f"episode='{entry.get('title', '')}', input tokens: ~{estimated_input_tokens}, max output tokens: {max_output_tokens} "
+        f"[provider={config.llm_provider}, model={config.llm_model}]"
+    )
+
+    t0 = time.time()
+    summary_text, usage = run_llm_text_request(prompt, config, max_output_tokens=max_output_tokens)
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", summary_text) if part.strip()]
+    summary_text = "\n\n".join(paragraphs[:config.weekly_summary_max_paragraphs_per_episode]).strip()
+    if not summary_text:
+        raise ValueError(f"Weekly summary came back empty for episode '{entry.get('title', '')}'.")
+
+    elapsed = time.time() - t0
+    log.info(
+        "Weekly episode summary complete — "
+        f"episode='{entry.get('title', '')}' | tokens: {usage.get('input_tokens', 0)} in / "
+        f"{usage.get('output_tokens', 0)} out / {usage.get('total_tokens', 0)} total [{elapsed:.1f}s]"
+    )
+    return summary_text, usage, elapsed
+
+
+def render_summary_paragraphs_html(summary_text):
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", summary_text) if part.strip()]
+    return "".join(f"<p>{html.escape(paragraph)}</p>" for paragraph in paragraphs)
+
+
+def build_weekly_summary_bodies(subject, summaries, period):
+    header_label = period["week_ending_label"]
+    plain_sections = [subject, f"Week ending {header_label}", ""]
+    html_sections = [
+        "<!DOCTYPE html>",
+        "<html lang=\"en\">",
+        "<head>",
+        "  <meta charset=\"UTF-8\">",
+        "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">",
+        "  <style>",
+        "    body { font-family: -apple-system, BlinkMacSystemFont, \"Helvetica Neue\", sans-serif; color: #1f2430; line-height: 1.6; margin: 0; background: #f8f8fb; }",
+        "    .wrapper { max-width: 920px; margin: 0 auto; padding: 28px 24px 40px; background: #ffffff; }",
+        "    h1 { margin-bottom: 6px; font-size: 28px; }",
+        "    .week-ending { color: #5e6573; margin-bottom: 28px; }",
+        "    .episode { margin-top: 26px; padding-top: 20px; border-top: 1px solid #e8e9ef; }",
+        "    .episode:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }",
+        "    h2 { margin-bottom: 6px; font-size: 22px; }",
+        "    .published { color: #5e6573; font-size: 14px; margin-bottom: 14px; }",
+        "    p { margin: 0 0 14px; }",
+        "  </style>",
+        "</head>",
+        "<body>",
+        "  <div class=\"wrapper\">",
+        f"    <h1>{html.escape(subject)}</h1>",
+        f"    <div class=\"week-ending\">Week ending {html.escape(header_label)}</div>",
+    ]
+
+    for item in summaries:
+        published_label = item["published_dt"].strftime("%Y-%m-%d") if item.get("published_dt") else "Unknown"
+        plain_sections.extend([
+            item["title"],
+            f"Published: {published_label}",
+            "",
+            item["summary"],
+            "",
+            "-" * 60,
+            "",
+        ])
+        html_sections.extend([
+            "    <div class=\"episode\">",
+            f"      <h2>{html.escape(item['title'])}</h2>",
+            f"      <div class=\"published\">Published: {html.escape(published_label)}</div>",
+            f"      {render_summary_paragraphs_html(item['summary'])}",
+            "    </div>",
+        ])
+
+    html_sections.extend(["  </div>", "</body>", "</html>"])
+    return "\n".join(plain_sections).strip() + "\n", "\n".join(html_sections)
+
+
+def save_weekly_summary_artifacts(subject, plain_body, html_body, period, config):
+    os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
+    date_slug = period["week_ending_date"].isoformat()
+    txt_path = os.path.join(TRANSCRIPT_DIR, f"compound_shows_summary_week_ending_{date_slug}.txt")
+    html_path = os.path.join(TRANSCRIPT_DIR, f"compound_shows_summary_week_ending_{date_slug}.html")
+    if config.weekly_summary_save_text_copy:
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(plain_body)
+        log.info(f"Saved weekly summary text to {txt_path}")
+    else:
+        txt_path = None
+    if config.weekly_summary_save_html_copy:
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html_body)
+        log.info(f"Saved weekly summary HTML to {html_path}")
+    else:
+        html_path = None
+    return txt_path, html_path
+
+
+def send_weekly_summary_email(subject, plain_body, html_body, config):
+    gmail_address = os.getenv("GMAIL_ADDRESS")
+    gmail_password = os.getenv("GMAIL_APP_PASSWORD", "").replace(" ", "")
+    recipients = get_weekly_summary_recipients()
+
+    if not all([gmail_address, gmail_password]) or not recipients:
+        log.warning("Weekly summary email credentials incomplete — skipping send.")
+        return 0, recipients
+
+    msg = MIMEMultipart("alternative")
+    msg["From"] = gmail_address
+    msg["To"] = ", ".join(recipients)
+    msg["Subject"] = subject
+    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    t0 = time.time()
+    with smtplib.SMTP_SSL(config.smtp_host, config.smtp_port) as server:
+        server.login(gmail_address, gmail_password)
+        server.sendmail(gmail_address, recipients, msg.as_string())
+    elapsed = time.time() - t0
+    log.info(f"Weekly summary emailed to {', '.join(recipients)} [{elapsed:.1f}s]")
+    return elapsed, recipients
+
+
+def maybe_run_weekly_summary(state, config, now=None):
+    now = now or datetime.now()
+    if not should_run_weekly_summary(now, config):
+        return {"triggered": False, "sent": False, "candidates": []}
+
+    period = get_weekly_summary_period(now, config)
+    prior_send = get_weekly_summary_history_entry(state, period["week_key"])
+    if prior_send and prior_send.get("sent_at"):
+        log.info(
+            "Weekly summary skipped: already sent for "
+            f"{period['week_key']} at {prior_send['sent_at']}."
+        )
+        return {
+            "triggered": True,
+            "sent": False,
+            "already_sent": True,
+            "candidates": [],
+            "week_key": period["week_key"],
+            "week_ending": period["week_ending_date"].isoformat(),
+        }
+
+    candidates = get_weekly_summary_candidates(state, config, now=now)
+    if not candidates:
+        log.info(
+            "Weekly summary skipped: no qualifying transcripts found for "
+            f"{period['window_start'].date().isoformat()} through {period['week_ending_date'].isoformat()}."
+        )
+        return {
+            "triggered": True,
+            "sent": False,
+            "already_sent": False,
+            "candidates": [],
+            "week_key": period["week_key"],
+            "week_ending": period["week_ending_date"].isoformat(),
+        }
+
+    subject = f"{config.weekly_summary_email_subject_prefix} - Week ending {period['week_ending_label']}"
+    generation_start = time.time()
+    total_input_tokens = 0
+    total_output_tokens = 0
+    total_tokens = 0
+    total_summary_llm_s = 0.0
+    summaries = []
+
+    for entry in candidates:
+        with open(entry["transcript_path"], "r", encoding="utf-8") as f:
+            transcript_text = f.read()
+        summary_text, usage, elapsed = summarize_episode_for_weekly_summary(entry, transcript_text, config)
+        total_input_tokens += usage.get("input_tokens", 0)
+        total_output_tokens += usage.get("output_tokens", 0)
+        total_tokens += usage.get("total_tokens", 0)
+        total_summary_llm_s += elapsed
+        summaries.append({
+            "title": entry.get("title", "Unknown Episode"),
+            "published_dt": entry.get("published_dt"),
+            "summary": summary_text,
+            "transcript_path": entry.get("transcript_path"),
+            "llm_usage": usage,
+            "summary_elapsed_s": round(elapsed, 1),
+        })
+
+    plain_body, html_body = build_weekly_summary_bodies(subject, summaries, period)
+    txt_path, html_path = save_weekly_summary_artifacts(subject, plain_body, html_body, period, config)
+    email_elapsed, recipients = send_weekly_summary_email(subject, plain_body, html_body, config)
+    generation_elapsed = time.time() - generation_start
+    llm_usage = {
+        "provider": config.llm_provider,
+        "model": config.llm_model,
+        "input_tokens": total_input_tokens,
+        "output_tokens": total_output_tokens,
+        "total_tokens": total_tokens,
+    }
+    timing = {
+        "summary_llm_s": round(total_summary_llm_s, 1),
+        "email_s": round(email_elapsed, 1),
+        "total_s": round(generation_elapsed, 1),
+    }
+
+    if email_elapsed:
+        record_weekly_summary_sent(
+            state,
+            period,
+            recipients,
+            summaries,
+            subject,
+            txt_path,
+            html_path,
+            now,
+            llm_usage,
+            timing,
+            config.weekly_summary_test_mode,
+        )
+        save_state(state)
+
+    append_jsonl(
+        WEEKLY_SUMMARY_LOG_FILE,
+        {
+            "generated_at": now.isoformat(),
+            "subject": subject,
+            "week_key": period["week_key"],
+            "week_ending": period["week_ending_date"].isoformat(),
+            "window_start": period["window_start"].isoformat(),
+            "window_end": period["window_end"].isoformat(),
+            "summary_test_mode": config.weekly_summary_test_mode,
+            "episode_count": len(summaries),
+            "recipients": recipients,
+            "text_path": txt_path,
+            "html_path": html_path,
+            "llm_usage": llm_usage,
+            "timing": timing,
+            "episodes": [
+                {
+                    "title": item["title"],
+                    "published": item["published_dt"].strftime("%Y-%m-%d") if item.get("published_dt") else None,
+                    "transcript_path": item["transcript_path"],
+                    "llm_usage": item["llm_usage"],
+                    "summary_elapsed_s": item["summary_elapsed_s"],
+                }
+                for item in summaries
+            ],
+        },
+    )
+    log.info(
+        "Weekly summary complete — "
+        f"episodes: {len(summaries)} | tokens: {total_input_tokens} in / {total_output_tokens} out / {total_tokens} total | "
+        f"summary LLM time: {total_summary_llm_s:.1f}s | email: {email_elapsed:.1f}s | total: {generation_elapsed:.1f}s"
+    )
+    return {
+        "triggered": True,
+        "sent": bool(email_elapsed),
+        "already_sent": False,
+        "candidates": summaries,
+        "week_key": period["week_key"],
+        "week_ending": period["week_ending_date"].isoformat(),
+        "text_path": txt_path,
+        "html_path": html_path,
+        "email_s": round(email_elapsed, 1),
+        "summary_llm_s": round(total_summary_llm_s, 1),
+        "total_s": round(generation_elapsed, 1),
+        "llm_usage": llm_usage,
+        "recipients": recipients,
+    }
 
 
 def queue_episode_for_retry(state, episode, error):
@@ -2666,7 +3249,9 @@ def main():
     log.info(f"  WhisperX: model={config.whisper_model} | device={config.whisperx_device} | compute_type={config.whisper_compute_type}")
     log.info(f"  LLM: {config.llm_provider} | paragraph_gap={config.paragraph_gap_secs}s")
     log.info(f"  Audio retention: {config.audio_retention_hours}h")
-    if config.test_mode:
+    if config.weekly_summary_test_mode:
+        mode_text = "SUMMARY-ONLY TEST (weekly summary only; no new transcriptions)"
+    elif config.test_mode:
         if config.test_mode_month_number is not None:
             month_start, _ = get_most_recent_month_window(config.test_mode_month_number)
             mode_text = (
@@ -2684,29 +3269,32 @@ def main():
     load_dotenv(ENV_FILE)
     state = load_state()
     shared_resources = None
+    weekly_summary_result = {"triggered": False, "sent": False, "candidates": []}
+    weekly_summary_attempted = False
     
     # Clean up expired audio files at start of run
     cleanup_old_audio(config)
 
     try:
-        episodes = fetch_all_new_episodes(state, config)
+        episodes = []
+        if config.weekly_summary_test_mode:
+            log.info("SUMMARY-ONLY TEST MODE: skipping RSS fetch and transcript generation.")
+        else:
+            episodes = fetch_all_new_episodes(state, config)
 
-        if not episodes:
-            log.info("No new episodes found — nothing to do.")
-            state["last_run"] = datetime.now().isoformat()
-            save_state(state)
-            return
-
-        log.info("Loading shared WhisperX resources once for this run...")
-        shared_resources = load_shared_whisperx_resources(config)
-        if shared_resources.get("error"):
-            raise shared_resources["error"]
-        log.info(
-            "Shared resource warmup ready: "
-            f"model={shared_resources.get('model_load_s', 0):.1f}s | "
-            f"align={shared_resources.get('align_load_s', 0):.1f}s | "
-            f"warmup={shared_resources.get('warmup_s', 0):.1f}s"
-        )
+        if episodes:
+            log.info("Loading shared WhisperX resources once for this run...")
+            shared_resources = load_shared_whisperx_resources(config)
+            if shared_resources.get("error"):
+                raise shared_resources["error"]
+            log.info(
+                "Shared resource warmup ready: "
+                f"model={shared_resources.get('model_load_s', 0):.1f}s | "
+                f"align={shared_resources.get('align_load_s', 0):.1f}s | "
+                f"warmup={shared_resources.get('warmup_s', 0):.1f}s"
+            )
+        elif not config.weekly_summary_test_mode:
+            log.info("No new episodes found in the regular transcription phase.")
 
         for ep in episodes:
             ep_start = time.time()
@@ -2875,10 +3463,12 @@ def main():
                 state["processed_guids"].add(ep["guid"])
                 state["episodes"].append({
                     "guid": ep["guid"],
+                    "podcast": ep["podcast"],
                     "title": ep["title"],
                     "published": ep["published"],
                     "published_at": ep.get("published_at"),
                     "processed_at": datetime.now().isoformat(),
+                    "final_transcript_path": cleaned_txt_path,
                     "timing": {
                         "download_s":   round(t_download, 1),
                         "transcribe_total_s": round(t_transcribe_total, 1),
@@ -2924,10 +3514,21 @@ def main():
                 if audio_path and os.path.exists(audio_path):
                     log.info(f"Audio retained: {audio_path} (will expire in {config.audio_retention_hours}h)")
 
+        weekly_summary_attempted = True
+        weekly_summary_result = maybe_run_weekly_summary(state, config, now=datetime.now())
+
         run_elapsed = time.time() - run_start
         log.info("=" * 60)
         log.info(f"Run complete in {run_elapsed:.1f}s ({run_elapsed/60:.1f} min)")
         log.info(f"Episodes processed: {len(episodes)}")
+        if weekly_summary_result.get("triggered"):
+            log.info(
+                "Weekly summary trigger: yes | "
+                f"week: {weekly_summary_result.get('week_ending', 'unknown')} | "
+                f"qualifying episodes: {len(weekly_summary_result.get('candidates', []))} | "
+                f"already_sent: {'yes' if weekly_summary_result.get('already_sent') else 'no'} | "
+                f"sent: {'yes' if weekly_summary_result.get('sent') else 'no'}"
+            )
         log.info("=" * 60)
 
         state["last_run"] = datetime.now().isoformat()
@@ -2940,10 +3541,19 @@ def main():
             f"The Compound transcript agent failed:\n\n{e}\n\nCheck {LOG_FILE}",
             config=config,
         )
+        if not weekly_summary_attempted:
+            try:
+                weekly_summary_attempted = True
+                weekly_summary_result = maybe_run_weekly_summary(state, config, now=datetime.now())
+            except Exception as weekly_summary_error:
+                log.error(
+                    f"Weekly summary recovery attempt failed after hard failure: {weekly_summary_error}",
+                    exc_info=True,
+                )
         raise
     finally:
         release_shared_whisperx_resources(shared_resources)
-        if config.test_mode:
+        if config.test_mode or config.weekly_summary_test_mode:
             reset_test_mode_settings()
         release_run_lock(run_lock)
 

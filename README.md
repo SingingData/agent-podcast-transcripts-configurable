@@ -251,6 +251,7 @@ Relevant settings:
 TEST_MODE=true
 TEST_MODE_EPISODE_COUNT=6
 TEST_MODE_MONTH=
+WEEKLY_SUMMARY_TEST_MODE=false
 ```
 
 What test mode does:
@@ -258,6 +259,50 @@ What test mode does:
 - processes only the most recent `TEST_MODE_EPISODE_COUNT` matching episodes from that shared pool (not per show)
 - keeps intermediate transcript artifacts that are useful for inspection and debugging
 - sends transcript emails to `TEST_RUN_RECIPIENTS` during test runs only; if that variable is unset, it falls back to `TRANSCRIPT_RECIPIENTS`
+
+### Weekly Friday summary
+
+On Friday runs, if `ENABLE_WEEKLY_SUMMARY=true`, the agent attempts the weekly summary after the main run path completes. This weekly summary attempt is independent of whether that day's transcript work succeeded, partially failed, or fully failed.
+
+The agent checks transcripts this agent has already created and looks for episodes whose `processed_at` timestamp falls within the configured weekly summary lookback window. By default that window is the prior 7 days ending on Friday.
+
+If any qualifying transcripts exist, the agent sends a single weekly roundup email to the same configured recipients as normal transcript emails using this subject format:
+
+```txt
+Compound Shows Summary - Week ending April 25, 2026
+```
+
+The weekly summary email body includes every qualifying episode from that lookback window. Each section contains the episode title and a no-more-than-3-paragraph summary intended to mention the important people, facts, companies, themes, claims, and other notable details from that episode.
+
+The agent records send history in `state/state.json` and will send at most one weekly summary email per `week_ending_YYYY-MM-DD` window, even if the agent is run multiple times that same day or retried after a failure.
+
+After the summary is generated, the agent also saves local copies in `transcripts/`:
+
+- `compound_shows_summary_week_ending_YYYY-MM-DD.txt`
+- `compound_shows_summary_week_ending_YYYY-MM-DD.html`
+
+### Weekly summary test mode
+
+If you want to trigger only the weekly summary logic without fetching or transcribing new episodes, set this in `settings/transcription-settings.txt`:
+
+```txt
+WEEKLY_SUMMARY_TEST_MODE=true
+```
+
+In this mode, the agent skips RSS fetch/transcription work, runs only the weekly summary flow against already existing local transcripts, and then automatically resets `WEEKLY_SUMMARY_TEST_MODE=false` after the run completes.
+
+Related settings in `settings/transcription-settings.txt`:
+
+```txt
+ENABLE_WEEKLY_SUMMARY=true
+WEEKLY_SUMMARY_DAY=FRIDAY
+WEEKLY_SUMMARY_LOOKBACK_DAYS=7
+WEEKLY_SUMMARY_TEST_LOOKBACK_DAYS=7
+WEEKLY_SUMMARY_MAX_PARAGRAPHS_PER_EPISODE=3
+WEEKLY_SUMMARY_SAVE_TEXT_COPY=true
+WEEKLY_SUMMARY_SAVE_HTML_COPY=true
+WEEKLY_SUMMARY_EMAIL_SUBJECT_PREFIX=Compound Shows Summary
+```
 
 Optional selectors:
 - leave `TEST_MODE_MONTH=` blank to use the default behavior and pull the most recent episodes
