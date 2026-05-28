@@ -186,6 +186,8 @@ Minimum likely required values:
 - `LLM_PROVIDER`
 - `LLM_MODEL`
 - API key for the provider you selected
+- optional `LLM_TIMEOUT_FALLBACK_PROVIDER` / `LLM_TIMEOUT_FALLBACK_MODEL` for grok-3 cleanup timeouts; defaults to Anthropic Claude Haiku when available
+- optional `LLM_MAX_TOKENS` as a cap; cleanup output tokens are otherwise sized dynamically from the prior calendar month's longest transcript
 - email credentials and sender settings in `.env`
 - `TRANSCRIPT_RECIPIENTS` for one or more regular-run recipients (comma-separated)
 - optional `TEST_RUN_RECIPIENTS` for one or more test-run recipients (comma-separated; if not set, test runs automatically fall back to `TRANSCRIPT_RECIPIENTS`)

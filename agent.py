@@ -26,6 +26,7 @@ import time
 import calendar
 import shutil
 import smtplib
+import socket
 import logging
 import fcntl
 import requests
@@ -42,6 +43,7 @@ from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 # ── Load .env early so all os.getenv() calls at module level pick up values ──
@@ -75,12 +77,22 @@ SHOW_DRAWINGS_FILE = os.path.join(SETTINGS_DIR, "show-drawings.txt")
 PRODUCTION_CREW_DRAWING = os.path.join(BASE_DIR, "drawings", "caricature_drawings", "production_crew_drawing.png")
 TRANSCRIPT_EMAIL_SENT_LOG_FILE = os.path.join(STATE_DIR, "transcript-email-sent-log.jsonl")
 WEEKLY_SUMMARY_LOG_FILE = os.path.join(STATE_DIR, "weekly-summary-log.jsonl")
+DEFAULT_LLM_TIMEOUT_FALLBACK_PROVIDER = "anthropic"
+DEFAULT_LLM_TIMEOUT_FALLBACK_MODEL = "claude-haiku-4-5-20251001"
 CORRECTION_REQUEST_TEXT = (
     'Help us catch transcription errors.\n'
     'Reply to this email. In the body of your reply email, start with the word "correction:", then type the actual transcript word '
     'or phrase that was mis-transcribed, a back slash "\\", and the correct way to transcribe this word of phrase.\n'
     'These will be human reviewed before implementing. Thank you!'
 )
+
+
+class NetworkPreflightError(RuntimeError):
+    pass
+
+
+class RSSFetchError(RuntimeError):
+    pass
 WEEKLY_SUMMARY_PROMPT_TEMPLATE = """You are writing a weekly roundup email for podcast transcripts.
 
 Write a detailed summary of this episode in no more than {max_paragraphs} paragraphs.
@@ -330,6 +342,77 @@ def load_podcast_feeds(path):
             alias = parts[2].strip() if len(parts) > 2 and parts[2].strip() else None
             podcasts.append((name, rss_url, alias))
     return podcasts
+
+
+def hostname_from_url(url):
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        raise NetworkPreflightError(f"Invalid URL for network preflight: {url}")
+    return parsed.hostname
+
+
+def check_dns_for_url(url, label):
+    hostname = hostname_from_url(url)
+    try:
+        socket.getaddrinfo(hostname, None)
+    except OSError as e:
+        raise NetworkPreflightError(f"[{label}] DNS resolution failed for {hostname}: {e}") from e
+
+
+def preflight_rss_feed(podcast_name, rss_url):
+    check_dns_for_url(rss_url, podcast_name)
+    feed = feedparser.parse(rss_url)
+    if feed.bozo:
+        raise NetworkPreflightError(f"[{podcast_name}] RSS fetch failed for {rss_url}: {feed.bozo_exception}")
+    if not feed.entries:
+        raise NetworkPreflightError(f"[{podcast_name}] RSS fetch returned 0 entries for {rss_url}")
+    log.info(f"[{podcast_name}] Preflight RSS check passed — {len(feed.entries)} entries visible.")
+
+
+def preflight_smtp_if_configured(config):
+    gmail_address = os.getenv("GMAIL_ADDRESS")
+    gmail_password = os.getenv("GMAIL_APP_PASSWORD", "").replace(" ", "")
+    recipients = os.getenv("TRANSCRIPT_RECIPIENTS") or os.getenv("TRANSCRIPT_RECIPIENT")
+
+    if not all([gmail_address, gmail_password, recipients]):
+        log.info("Preflight email check skipped — email credentials incomplete.")
+        return
+
+    try:
+        socket.getaddrinfo(config.smtp_host, config.smtp_port)
+    except OSError as e:
+        raise NetworkPreflightError(f"SMTP DNS resolution failed for {config.smtp_host}: {e}") from e
+
+    try:
+        with socket.create_connection((config.smtp_host, config.smtp_port), timeout=8):
+            pass
+    except OSError as e:
+        raise NetworkPreflightError(
+            f"SMTP connectivity failed for {config.smtp_host}:{config.smtp_port}: {e}"
+        ) from e
+
+    log.info(f"Preflight email check passed — {config.smtp_host}:{config.smtp_port} reachable.")
+
+
+def run_network_preflight(config):
+    if config.weekly_summary_test_mode:
+        log.info("Network preflight skipped for SUMMARY-ONLY TEST MODE.")
+        return
+
+    failures = []
+    for podcast_name, rss_url, _title_filter in config.podcasts:
+        try:
+            preflight_rss_feed(podcast_name, rss_url)
+        except NetworkPreflightError as e:
+            failures.append(str(e))
+
+    try:
+        preflight_smtp_if_configured(config)
+    except NetworkPreflightError as e:
+        failures.append(str(e))
+
+    if failures:
+        raise NetworkPreflightError("Network preflight failed:\n- " + "\n- ".join(failures))
 
 
 @dataclass
@@ -1386,6 +1469,77 @@ def resolve_final_transcript_path(entry, config):
     return None
 
 
+def estimate_text_tokens(text):
+    return max(1, (len(text or "") + 3) // 4)
+
+
+def get_previous_calendar_month_window(now=None):
+    now = now or datetime.now()
+    current_month_start = datetime(now.year, now.month, 1)
+    if now.month == 1:
+        previous_month_start = datetime(now.year - 1, 12, 1)
+    else:
+        previous_month_start = datetime(now.year, now.month - 1, 1)
+    return previous_month_start, current_month_start
+
+
+def get_last_month_longest_transcript_token_estimate(state, config, now=None):
+    if not state:
+        return None
+
+    month_start, month_end = get_previous_calendar_month_window(now)
+    longest = None
+
+    for entry in state.get("episodes", []):
+        published_at = parse_datetime_value(entry.get("published_at") or entry.get("published"))
+        if not published_at or not (month_start <= published_at < month_end):
+            continue
+
+        transcript_path = resolve_final_transcript_path(entry, config)
+        if not transcript_path or not os.path.exists(transcript_path):
+            continue
+
+        try:
+            with open(transcript_path, "r", encoding="utf-8") as f:
+                transcript_text = f.read()
+        except OSError as e:
+            log.warning(f"Could not read prior transcript for LLM token sizing: {transcript_path} ({e})")
+            continue
+
+        token_estimate = estimate_text_tokens(transcript_text)
+        candidate = {
+            "token_estimate": token_estimate,
+            "char_count": len(transcript_text),
+            "title": entry.get("title", "Unknown Episode"),
+            "path": transcript_path,
+            "month": month_start.strftime("%Y-%m"),
+        }
+        if longest is None or candidate["token_estimate"] > longest["token_estimate"]:
+            longest = candidate
+
+    return longest
+
+
+def resolve_llm_cleanup_max_output_tokens(text, config, state=None):
+    current_estimate = estimate_text_tokens(text)
+    last_month_longest = get_last_month_longest_transcript_token_estimate(state, config)
+    baseline = last_month_longest["token_estimate"] if last_month_longest else current_estimate
+    baseline = max(baseline, current_estimate)
+    margin = max(1000, int(baseline * 0.15))
+    max_output_tokens = baseline + margin
+
+    configured = os.getenv("LLM_MAX_TOKENS", "").strip()
+    if configured and configured.lower() not in {"auto", "dynamic"}:
+        try:
+            configured_cap = int(configured)
+            if configured_cap > 0:
+                max_output_tokens = min(max_output_tokens, configured_cap)
+        except ValueError:
+            log.warning(f"Ignoring invalid LLM_MAX_TOKENS value '{configured}'; using dynamic cleanup token budget.")
+
+    return max(1, max_output_tokens), last_month_longest, current_estimate
+
+
 def should_run_weekly_summary(now, config):
     if config.weekly_summary_test_mode:
         return True
@@ -1458,23 +1612,31 @@ def get_weekly_summary_candidates(state, config, now=None):
 
     for entry in state.get("episodes", []):
         processed_at = parse_datetime_value(entry.get("processed_at"))
-        if processed_at is None or not (period["window_start"] <= processed_at <= period["window_end"]):
+        published_at = parse_datetime_value(entry.get("published_at") or entry.get("published"))
+        summary_date = published_at or processed_at
+        if summary_date is None or not (period["window_start"] <= summary_date <= period["window_end"]):
             continue
 
-        published_at = parse_datetime_value(entry.get("published_at") or entry.get("published"))
         key = entry.get("guid") or f"{entry.get('title','')}|{entry.get('published','')}"
         current = deduped.get(key)
-        if current and current["processed_at_dt"] >= processed_at:
+        if current and current.get("processed_at_dt") and processed_at and current["processed_at_dt"] >= processed_at:
             continue
 
         candidate = dict(entry)
         candidate["published_dt"] = published_at
         candidate["processed_at_dt"] = processed_at
+        candidate["summary_date_dt"] = summary_date
         candidate["transcript_path"] = resolve_final_transcript_path(candidate, config)
         deduped[key] = candidate
 
     results = [entry for entry in deduped.values() if entry.get("transcript_path")]
-    results.sort(key=lambda entry: (entry["processed_at_dt"], entry.get("published_dt") or datetime.min), reverse=True)
+    results.sort(
+        key=lambda entry: (
+            entry.get("summary_date_dt") or datetime.min,
+            entry.get("processed_at_dt") or datetime.min,
+        ),
+        reverse=True,
+    )
     return results
 
 
@@ -1953,9 +2115,12 @@ def fetch_new_episodes_for_podcast(podcast_name, rss_url, title_filter, state, c
     rss_elapsed = time.time() - t0
 
     if feed.bozo:
-        log.warning(f"[{podcast_name}] RSS parse warning: {feed.bozo_exception}")
+        raise RSSFetchError(f"[{podcast_name}] RSS fetch failed for {rss_url}: {feed.bozo_exception}")
 
     entries = feed.entries
+    if not entries:
+        raise RSSFetchError(f"[{podcast_name}] RSS fetch returned 0 entries for {rss_url}")
+
     log.info(f"[{podcast_name}] RSS fetch complete in {rss_elapsed:.1f}s — {len(entries)} entries in feed.")
 
     candidates = []
@@ -2034,6 +2199,7 @@ def fetch_new_episodes_for_podcast(podcast_name, rss_url, title_filter, state, c
 def fetch_all_new_episodes(state, config):
     """Fetch episodes across all configured feeds based on watermark or test mode."""
     all_episodes = []
+    feed_failures = []
     latest_transcribed_published_at = get_latest_transcribed_published_at(state)
     if latest_transcribed_published_at:
         log.info(f"Latest transcribed episode published timestamp: {latest_transcribed_published_at.isoformat()}")
@@ -2057,8 +2223,15 @@ def fetch_all_new_episodes(state, config):
                 latest_transcribed_published_at=latest_transcribed_published_at,
             )
             all_episodes.extend(eps)
+        except RSSFetchError as e:
+            log.error(f"[{podcast_name}] Failed to fetch RSS: {e}")
+            feed_failures.append(str(e))
         except Exception as e:
             log.error(f"[{podcast_name}] Failed to fetch RSS: {e}")
+            feed_failures.append(f"[{podcast_name}] Unexpected RSS fetch failure: {e}")
+
+    if feed_failures and len(feed_failures) == len(config.podcasts):
+        raise RSSFetchError("All configured RSS feeds failed:\n- " + "\n- ".join(feed_failures))
 
     deduped_episodes = []
     seen_guids = set()
@@ -2485,7 +2658,7 @@ def transcribe_with_whisperx(audio_path, title, config, podcast_name=None, prelo
 
 # ── LLM Cleanup Pass ──────────────────────────────────────────────────────────
 
-def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
+def llm_cleanup(text: str, config: RuntimeConfig, state=None) -> tuple:
     """Run a lightweight LLM pass to clean up punctuation and filler words."""
     if config.llm_provider == "none":
         return text, {}
@@ -2494,7 +2667,11 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
     t0 = time.time()
     llm_timeout = max(1, config.llm_request_timeout_seconds)
     request_content = config.llm_cleanup_prompt + text
-    max_output_tokens = int(os.getenv("LLM_MAX_TOKENS"))
+    max_output_tokens, last_month_longest, current_output_estimate = resolve_llm_cleanup_max_output_tokens(
+        text,
+        config,
+        state=state,
+    )
     estimated_input_tokens = max(1, (len(request_content) + 3) // 4)
 
     log.info(
@@ -2502,6 +2679,18 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
         f"input tokens: ~{estimated_input_tokens}, max output tokens: {max_output_tokens} "
         f"[provider={config.llm_provider}, model={config.llm_model}]"
     )
+    if last_month_longest:
+        log.info(
+            "LLM cleanup token budget source — "
+            f"longest {last_month_longest['month']} transcript: ~{last_month_longest['token_estimate']} tokens "
+            f"({last_month_longest['char_count']} chars), title='{last_month_longest['title']}', "
+            f"current transcript estimate: ~{current_output_estimate} tokens"
+        )
+    else:
+        log.info(
+            "LLM cleanup token budget source — "
+            f"no prior-month transcript found; current transcript estimate: ~{current_output_estimate} tokens"
+        )
 
     def is_timeout_error(error):
         message = str(error).lower()
@@ -2586,31 +2775,33 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
         is_retryable_service_error = retryable or (status_code in retryable_statuses)
         return is_retryable_service_error, retry_after, status_code
 
-    def run_cleanup_once():
+    def run_cleanup_once(provider=None, model=None):
+        _provider = provider if provider is not None else config.llm_provider
+        _model = model if model is not None else config.llm_model
         usage = {}
 
-        if config.llm_provider == "anthropic":
+        if _provider == "anthropic":
             import anthropic
-            client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+            client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"), timeout=llm_timeout)
             message = client.messages.create(
-                model=config.llm_model,
+                model=_model,
                 max_tokens=max_output_tokens,
                 temperature=config.llm_temperature,
                 messages=[{"role": "user", "content": request_content}]
             )
             cleaned = message.content[0].text.strip()
             usage = {
-                "provider": "anthropic", "model": config.llm_model,
+                "provider": "anthropic", "model": _model,
                 "input_tokens": message.usage.input_tokens,
                 "output_tokens": message.usage.output_tokens,
                 "total_tokens": message.usage.input_tokens + message.usage.output_tokens,
             }
 
-        elif config.llm_provider == "openai":
+        elif _provider == "openai":
             import openai
             client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"), max_retries=0)
             response = client.chat.completions.create(
-                model=config.llm_model,
+                model=_model,
                 messages=[{"role": "user", "content": request_content}],
                 max_tokens=max_output_tokens,
                 temperature=config.llm_temperature,
@@ -2618,13 +2809,13 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
             )
             cleaned = response.choices[0].message.content.strip()
             usage = {
-                "provider": "openai", "model": config.llm_model,
+                "provider": "openai", "model": _model,
                 "input_tokens": response.usage.prompt_tokens,
                 "output_tokens": response.usage.completion_tokens,
                 "total_tokens": response.usage.total_tokens,
             }
 
-        elif config.llm_provider in ("grok", "xai"):
+        elif _provider in ("grok", "xai"):
             import openai
             client = openai.OpenAI(
                 api_key=os.getenv("XAI_API_KEY"),
@@ -2632,7 +2823,7 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
                 max_retries=0,
             )
             response = client.chat.completions.create(
-                model=config.llm_model,
+                model=_model,
                 messages=[{"role": "user", "content": request_content}],
                 max_tokens=max_output_tokens,
                 temperature=config.llm_temperature,
@@ -2640,13 +2831,13 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
             )
             cleaned = response.choices[0].message.content.strip()
             usage = {
-                "provider": "grok", "model": config.llm_model,
+                "provider": "grok", "model": _model,
                 "input_tokens": response.usage.prompt_tokens,
                 "output_tokens": response.usage.completion_tokens,
                 "total_tokens": response.usage.total_tokens,
             }
 
-        elif config.llm_provider == "perplexity":
+        elif _provider == "perplexity":
             import openai
             client = openai.OpenAI(
                 api_key=os.getenv("PERPLEXITY_API_KEY"),
@@ -2654,7 +2845,7 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
                 max_retries=0,
             )
             response = client.chat.completions.create(
-                model=config.llm_model,
+                model=_model,
                 messages=[{"role": "user", "content": request_content}],
                 max_tokens=max_output_tokens,
                 temperature=config.llm_temperature,
@@ -2662,16 +2853,53 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
             )
             cleaned = response.choices[0].message.content.strip()
             usage = {
-                "provider": "perplexity", "model": config.llm_model,
+                "provider": "perplexity", "model": _model,
                 "input_tokens": response.usage.prompt_tokens,
                 "output_tokens": response.usage.completion_tokens,
                 "total_tokens": response.usage.total_tokens,
             }
 
         else:
-            log.warning(f"Unknown LLM_PROVIDER '{config.llm_provider}' — skipping cleanup.")
+            log.warning(f"Unknown LLM_PROVIDER '{_provider}' — skipping cleanup.")
             return text, {}
 
+        return cleaned, usage
+
+    def get_timeout_fallback_model():
+        primary_provider = (config.llm_provider or "").lower()
+        primary_model = (config.llm_model or "").lower()
+        if primary_provider not in {"grok", "xai"} or primary_model != "grok-3":
+            return None, None
+
+        provider = (
+            os.getenv("LLM_TIMEOUT_FALLBACK_PROVIDER")
+            or os.getenv("LLM_FALLBACK_PROVIDER")
+            or DEFAULT_LLM_TIMEOUT_FALLBACK_PROVIDER
+        ).strip()
+        model = (
+            os.getenv("LLM_TIMEOUT_FALLBACK_MODEL")
+            or os.getenv("LLM_FALLBACK_MODEL")
+            or DEFAULT_LLM_TIMEOUT_FALLBACK_MODEL
+        ).strip()
+        return provider, model
+
+    def run_fallback_cleanup(provider, model, primary_error, reason):
+        log.warning(
+            f"Primary LLM ({config.llm_provider}/{config.llm_model}) {reason}; "
+            f"trying fallback ({provider}/{model}). Primary error: {primary_error}"
+        )
+        cleaned, usage = run_cleanup_once(provider=provider, model=model)
+        degeneration_reason = analyze_degenerate_output(cleaned, usage)
+        if degeneration_reason:
+            raise ValueError(f"LLM cleanup fallback produced degenerate output: {degeneration_reason}")
+        elapsed = time.time() - t0
+        usage["elapsed_s"] = round(elapsed, 1)
+        usage["fallback_from"] = f"{config.llm_provider}/{config.llm_model}"
+        log.info(
+            f"LLM cleanup complete via fallback {usage['provider']} ({usage['model']}) — "
+            f"tokens: {usage['input_tokens']} in / {usage['output_tokens']} out / "
+            f"{usage['total_tokens']} total [{elapsed:.1f}s]"
+        )
         return cleaned, usage
 
     try:
@@ -2709,6 +2937,16 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
                         time.sleep(backoff_seconds)
                         continue
 
+                if is_timeout_error(e):
+                    fallback_provider, fallback_model = get_timeout_fallback_model()
+                    if fallback_provider and fallback_model:
+                        return run_fallback_cleanup(
+                            fallback_provider,
+                            fallback_model,
+                            e,
+                            "timed out",
+                        )
+
                 if not timeout_retry_used and is_timeout_error(e):
                     timeout_retry_used = True
                     log.warning(
@@ -2744,6 +2982,16 @@ def llm_cleanup(text: str, config: RuntimeConfig) -> tuple:
         log.warning(f"LLM client library not installed ({e}) — skipping cleanup.")
         return text, {}
     except Exception as e:
+        fallback_provider = os.getenv("LLM_FALLBACK_PROVIDER", "").strip()
+        fallback_model = os.getenv("LLM_FALLBACK_MODEL", "").strip()
+        if fallback_provider and fallback_model:
+            try:
+                return run_fallback_cleanup(fallback_provider, fallback_model, e, "failed")
+            except Exception as fallback_error:
+                log.error(
+                    f"LLM cleanup fallback ({fallback_provider}/{fallback_model}) also failed: "
+                    f"{fallback_error} — using post-processed transcript."
+                )
         log.error(
             "LLM cleanup failed (non-fatal, using post-processed transcript): "
             f"{e} [provider={config.llm_provider}, timeout={llm_timeout}s, "
@@ -3286,6 +3534,8 @@ def main():
     cleanup_old_audio(config)
 
     try:
+        run_network_preflight(config)
+
         episodes = []
         if config.weekly_summary_test_mode:
             log.info("SUMMARY-ONLY TEST MODE: skipping RSS fetch and transcript generation.")
@@ -3362,10 +3612,12 @@ def main():
                         log_resources("Re-download")
                         continue
 
-                    raise ValueError(
-                        "Raw transcript junk persisted after retranscribe and re-download: "
-                        f"{raw_junk_reason}"
+                    log.warning(
+                        "Raw transcript junk persisted after retranscribe and re-download; "
+                        "continuing so the cleanup pass can remove known removable artifacts. "
+                        f"[{raw_junk_reason}]"
                     )
+                    break
 
                 t_transcribe_total = whisperx_metrics.get("total_transcribe_s", 0)
                 log.info(f"  ⏱ Phase 2 (Total):          {t_transcribe_total:.1f}s")
@@ -3424,7 +3676,7 @@ def main():
 
                 # ── Phase 5: LLM Cleanup ──────────────────────────────────────
                 t_llm_start = time.time()
-                plain_transcript_text, llm_usage = llm_cleanup(post_processed_text, config)
+                plain_transcript_text, llm_usage = llm_cleanup(post_processed_text, config, state=state)
                 t_llm = time.time() - t_llm_start
                 log.info(f"  ⏱ Phase 5 (LLM cleanup):    {t_llm:.1f}s")
                 log_resources("LLM Cleanup")
@@ -3544,6 +3796,9 @@ def main():
         state["last_run"] = datetime.now().isoformat()
         save_state(state)
 
+    except (NetworkPreflightError, RSSFetchError) as e:
+        log.error(f"Network/feed failure: {e}", exc_info=True)
+        raise
     except Exception as e:
         log.error(f"Hard failure: {e}", exc_info=True)
         send_alert_email(
