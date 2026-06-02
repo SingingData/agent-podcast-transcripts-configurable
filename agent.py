@@ -29,6 +29,7 @@ import smtplib
 import socket
 import logging
 import fcntl
+import subprocess
 import requests
 import feedparser
 import threading
@@ -64,6 +65,9 @@ LOG_FILE = os.path.join(LOGS_DIR, "agent.log")
 RUN_LOCK_FILE = os.path.join(STATE_DIR, "agent.lock")
 ENV_FILE = os.path.join(os.path.dirname(BASE_DIR), ".env")
 PHRASES_AND_VOCAB_DIR = os.path.join(BASE_DIR, "phrases-and-vocabulary")
+CORRECTIONS_DIR = os.path.join(PHRASES_AND_VOCAB_DIR, "corrections")
+GLOBAL_CORRECTIONS_FILE = os.path.join(CORRECTIONS_DIR, "global.txt")
+SHOW_CORRECTIONS_DIR = os.path.join(CORRECTIONS_DIR, "shows")
 KNOWN_HOSTS_FILE = os.path.join(PHRASES_AND_VOCAB_DIR, "known-hosts-per-podcast.txt")
 PODCAST_FEEDS_FILE = os.path.join(SETTINGS_DIR, "podcast_feeds.txt")
 TRANSCRIPTION_SETTINGS_FILE = os.path.join(SETTINGS_DIR, "transcription-settings.txt")
@@ -205,7 +209,7 @@ def load_phrase_list(path):
     return phrases
 
 
-def load_vocabulary_corrections(path):
+def load_corrections_file(path):
     corrections = []
     if not os.path.exists(path):
         return corrections
@@ -237,6 +241,115 @@ def load_vocabulary_corrections(path):
                 "delete_match": delete_match,
             })
     return corrections
+
+
+def load_vocabulary_corrections(path):
+    return load_corrections_file(path)
+
+
+def load_global_corrections():
+    if os.path.exists(GLOBAL_CORRECTIONS_FILE):
+        return load_corrections_file(GLOBAL_CORRECTIONS_FILE)
+    return load_corrections_file(VOCABULARY_CORRECTIONS_FILE)
+
+
+def slugify_podcast_name(podcast_name):
+    if not podcast_name:
+        return ""
+
+    slug = unicodedata.normalize("NFKD", podcast_name).encode("ascii", "ignore").decode("ascii")
+    slug = slug.replace("&", " and ")
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower()
+    return slug
+
+
+def get_show_corrections_file(podcast_name):
+    slug = slugify_podcast_name(podcast_name)
+    if not slug:
+        return None
+    return os.path.join(SHOW_CORRECTIONS_DIR, f"{slug}.txt")
+
+
+def load_show_corrections(podcast_name):
+    show_path = get_show_corrections_file(podcast_name)
+    if not show_path or not os.path.exists(show_path):
+        return []
+    return load_corrections_file(show_path)
+
+
+def normalize_correction_match_key(value):
+    return value.strip().casefold()
+
+
+def merge_correction_sets(global_corrections, show_corrections):
+    merged_matches = {}
+    ordered_keys = []
+
+    def upsert(match_text, replacement_text):
+        key = normalize_correction_match_key(match_text)
+        if key not in ordered_keys:
+            ordered_keys.append(key)
+        merged_matches[key] = {
+            "match": match_text,
+            "replacement": replacement_text,
+        }
+
+    for entry in global_corrections:
+        if entry.get("delete_match"):
+            upsert(entry["canonical"], "")
+            continue
+        for variant in entry["variants"]:
+            upsert(variant, entry["canonical"])
+
+    for entry in show_corrections:
+        if entry.get("delete_match"):
+            upsert(entry["canonical"], "")
+            continue
+        for variant in entry["variants"]:
+            upsert(variant, entry["canonical"])
+
+    grouped = {}
+    merged_corrections = []
+    for key in ordered_keys:
+        item = merged_matches.get(key)
+        if item is None:
+            continue
+        match_text = item["match"]
+        replacement_text = item["replacement"]
+        if replacement_text == "":
+            merged_corrections.append({
+                "canonical": match_text,
+                "variants": [],
+                "delete_match": True,
+            })
+            continue
+
+        grouped_entry = grouped.get(replacement_text)
+        if grouped_entry is None:
+            grouped_entry = {
+                "canonical": replacement_text,
+                "variants": [],
+                "delete_match": False,
+            }
+            grouped[replacement_text] = grouped_entry
+            merged_corrections.append(grouped_entry)
+        grouped_entry["variants"].append(match_text)
+
+    return merged_corrections
+
+
+def build_effective_corrections(podcast_name, config=None):
+    global_corrections = config.vocabulary_corrections if config else load_global_corrections()
+    show_corrections = load_show_corrections(podcast_name)
+    effective_corrections = merge_correction_sets(global_corrections, show_corrections)
+    metadata = {
+        "podcast": podcast_name or "",
+        "show_file": get_show_corrections_file(podcast_name),
+        "global_count": len(global_corrections),
+        "show_count": len(show_corrections),
+        "merged_count": len(effective_corrections),
+    }
+    return effective_corrections, metadata
 
 
 def apply_vocabulary_corrections(text, corrections):
@@ -321,7 +434,7 @@ def detect_obvious_raw_transcript_junk(text):
 OPENING_CATCH_PHRASES = load_phrase_list(OPENING_CATCH_PHRASES_FILE)
 OPENING_AD_PHRASES = load_phrase_list(OPENING_AD_PHRASES_FILE)
 CLOSING_AD_PHRASES = load_phrase_list(CLOSING_AD_PHRASES_FILE)
-VOCABULARY_CORRECTIONS = load_vocabulary_corrections(VOCABULARY_CORRECTIONS_FILE)
+VOCABULARY_CORRECTIONS = load_global_corrections()
 
 # Episode duration filter (skip trailers/promos)
 MIN_EPISODE_DURATION_SECS = int(SETTINGS["MIN_EPISODE_DURATION_SECS"])  # 5 minutes
@@ -446,6 +559,7 @@ class RuntimeConfig:
     weekly_summary_save_html_copy: bool
     weekly_summary_email_subject_prefix: str
     audio_retention_hours: int
+    audio_normalization_enabled: bool
     safe_title_max_len: int
     opening_ad_max_start_seconds: int
     podcast_start_early_char_limit: int
@@ -599,7 +713,7 @@ def load_runtime_config():
         opening_catch_phrases=load_phrase_list(OPENING_CATCH_PHRASES_FILE),
         opening_ad_phrases=load_phrase_list(OPENING_AD_PHRASES_FILE),
         closing_ad_phrases=load_phrase_list(CLOSING_AD_PHRASES_FILE),
-        vocabulary_corrections=load_vocabulary_corrections(VOCABULARY_CORRECTIONS_FILE),
+        vocabulary_corrections=load_global_corrections(),
         podcasts=load_podcast_feeds(PODCAST_FEEDS_FILE),
         min_episode_duration_secs=int(settings["MIN_EPISODE_DURATION_SECS"]),
         whisper_model=settings["WHISPER_MODEL"],
@@ -623,6 +737,7 @@ def load_runtime_config():
         weekly_summary_save_html_copy=settings.get("WEEKLY_SUMMARY_SAVE_HTML_COPY", "true").lower() == "true",
         weekly_summary_email_subject_prefix=settings.get("WEEKLY_SUMMARY_EMAIL_SUBJECT_PREFIX", "Compound Shows Summary").strip() or "Compound Shows Summary",
         audio_retention_hours=int(settings["AUDIO_RETENTION_HOURS"]),
+        audio_normalization_enabled=settings.get("AUDIO_NORMALIZATION_ENABLED", "false").lower() == "true",
         safe_title_max_len=int(settings["SAFE_TITLE_MAX_LEN"]),
         opening_ad_max_start_seconds=int(settings["OPENING_AD_MAX_START_SECONDS"]),
         podcast_start_early_char_limit=int(settings["PODCAST_START_EARLY_CHAR_LIMIT"]),
@@ -1766,7 +1881,22 @@ def summarize_episode_for_weekly_summary(entry, transcript_text, config):
 
     t0 = time.time()
     summary_text, usage = run_llm_text_request(prompt, config, max_output_tokens=max_output_tokens)
-    summary_text, vocabulary_replacements = apply_vocabulary_corrections(summary_text, config.vocabulary_corrections)
+    effective_corrections, correction_meta = build_effective_corrections(entry.get("podcast"), config)
+    log.info(
+        "Weekly summary corrections loaded — "
+        f"podcast='{entry.get('podcast', '')}' | "
+        f"global={correction_meta['global_count']} | "
+        f"show={correction_meta['show_count']} | "
+        f"merged={correction_meta['merged_count']}"
+    )
+    summary_text, vocabulary_replacements = apply_vocabulary_corrections(summary_text, effective_corrections)
+    if vocabulary_replacements:
+        replacement_summary = ", ".join(
+            f"{item['from']}→{item['to']} x{item['count']}" for item in vocabulary_replacements
+        )
+        log.info(f"Weekly summary corrections applied: {replacement_summary}")
+    else:
+        log.info("Weekly summary corrections applied: none")
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n", summary_text) if part.strip()]
     summary_text = "\n\n".join(paragraphs[:config.weekly_summary_max_paragraphs_per_episode]).strip()
     if not summary_text:
@@ -2299,6 +2429,12 @@ def get_audio_path(title, config):
     return os.path.join(AUDIO_DIR, f"{safe_title}.mp3")
 
 
+def get_normalized_audio_path(title, config):
+    """Get the normalized wav path used only for transcription."""
+    safe_title = make_safe_title(title, config)
+    return os.path.join(AUDIO_DIR, f"{safe_title}__normalized.wav")
+
+
 def check_cached_audio(title, config):
     """Check if audio file exists and is within retention period."""
     filepath = get_audio_path(title, config)
@@ -2372,6 +2508,52 @@ def download_audio(url, title, config, retries=None):
                 time.sleep(config.download_retry_backoff_base_seconds * (attempt + 1))
             else:
                 raise Exception(f"Failed to download after {retries} attempts: {e}")
+
+
+def normalize_audio_for_transcription(audio_path, title, config):
+    """Optionally normalize downloaded audio into a mono 16k wav for ASR."""
+    if not config.audio_normalization_enabled:
+        return audio_path, 0.0, False
+
+    normalized_path = get_normalized_audio_path(title, config)
+    if os.path.exists(normalized_path):
+        try:
+            os.remove(normalized_path)
+        except OSError:
+            pass
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i", audio_path,
+        "-ac", "1",
+        "-ar", "16000",
+        "-vn",
+        normalized_path,
+    ]
+
+    log.info(f"Normalizing audio for transcription: {os.path.basename(audio_path)} -> {os.path.basename(normalized_path)}")
+    t0 = time.time()
+    try:
+        completed = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError("ffmpeg is not available on PATH; cannot normalize audio.") from e
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"ffmpeg normalization failed: {stderr[-400:]}") from e
+
+    elapsed = time.time() - t0
+    if not os.path.exists(normalized_path):
+        raise RuntimeError("Audio normalization reported success but produced no output file.")
+
+    log.info(f"Normalized audio ready [{elapsed:.1f}s]")
+    if completed.stderr:
+        log.debug(completed.stderr.decode("utf-8", errors="replace").strip()[-1000:])
+    return normalized_path, elapsed, True
 
 # ── Shared Model Resources ───────────────────────────────────────────────────
 
@@ -3560,6 +3742,8 @@ def main():
             ep_start = time.time()
             log.info(f"\nProcessing: {ep['title']} ({ep['published']})")
             audio_path = None
+            transcription_audio_path = None
+            normalized_audio_created = False
 
             try:
                 # ── Phase 1: Download / cache audio ───────────────────────────
@@ -3571,12 +3755,25 @@ def main():
                     log.info(f"  ⏱ Phase 1 (Cached):         0.0s ({size_mb:.1f} MB)")
                 log_resources("Download")
 
+                # ── Phase 1b: Optional audio normalization ───────────────────
+                t_normalize = 0.0
+                transcription_audio_path, t_normalize, normalized_audio_created = normalize_audio_for_transcription(
+                    audio_path,
+                    ep["title"],
+                    config,
+                )
+                log.info(
+                    f"  ⏱ Phase 1b (Normalize):     {t_normalize:.1f}s"
+                    f"{' [enabled]' if normalized_audio_created else ' [disabled]'}"
+                )
+                log_resources("Normalize")
+
                 # ── Phase 2: WhisperX Transcription ───────────────────────────
                 raw_retranscribe_used = False
                 raw_redownload_used = False
                 while True:
                     transcript_path, plain_text, whisperx_metrics, aligned_segments, audio_for_diarization = transcribe_with_whisperx(
-                        audio_path, ep["title"], config,
+                        transcription_audio_path, ep["title"], config,
                         podcast_name=ep.get("podcast"),
                         shared_resources=shared_resources,
                         episode_title=ep.get("title", ""),
@@ -3604,11 +3801,18 @@ def main():
                         audio_path, redownload_elapsed, redownload_size_mb = download_audio(ep["audio_url"], ep["title"], config)
                         t_download += redownload_elapsed
                         size_mb = redownload_size_mb
+                        transcription_audio_path, t_normalize, normalized_audio_created = normalize_audio_for_transcription(
+                            audio_path,
+                            ep["title"],
+                            config,
+                        )
                         log.info(
                             "Detected obvious raw transcript junk again; re-downloaded audio and retranscribing one final time. "
                             f"[{raw_junk_reason}]"
                         )
                         log.info(f"  ⏱ Phase 1 (Re-download):    {redownload_elapsed:.1f}s ({redownload_size_mb:.1f} MB)")
+                        if config.audio_normalization_enabled:
+                            log.info(f"  ⏱ Phase 1b (Re-normalize):  {t_normalize:.1f}s")
                         log_resources("Re-download")
                         continue
 
@@ -3624,9 +3828,16 @@ def main():
 
                 # ── Phase 3: Vocabulary Corrections ──────────────────────────
                 t_vocab_start = time.time()
+                effective_corrections, correction_meta = build_effective_corrections(ep.get("podcast"), config)
+                log.info(
+                    "  Loaded corrections: "
+                    f"global={correction_meta['global_count']} | "
+                    f"show={correction_meta['show_count']} | "
+                    f"merged={correction_meta['merged_count']}"
+                )
                 corrected_text, vocabulary_replacements = apply_vocabulary_corrections(
                     plain_text,
-                    config.vocabulary_corrections,
+                    effective_corrections,
                 )
                 corrected_text, dotted_letter_run_removals = remove_repeated_dotted_letter_runs(corrected_text)
                 t_vocab = time.time() - t_vocab_start
@@ -3755,6 +3966,14 @@ def main():
                     os.remove(audio_path)
                     deleted_audio = True
                     log.info(f"Deleted source audio after failure so next run will re-download it: {audio_path}")
+                if (
+                    normalized_audio_created
+                    and transcription_audio_path
+                    and transcription_audio_path != audio_path
+                    and os.path.exists(transcription_audio_path)
+                ):
+                    os.remove(transcription_audio_path)
+                    log.info(f"Deleted normalized audio after failure: {transcription_audio_path}")
 
                 queue_episode_for_retry(state, ep, e)
                 save_state(state)
@@ -3775,6 +3994,14 @@ def main():
                 # Audio retained for AUDIO_RETENTION_HOURS (cleanup happens at start of run)
                 if audio_path and os.path.exists(audio_path):
                     log.info(f"Audio retained: {audio_path} (will expire in {config.audio_retention_hours}h)")
+                if (
+                    normalized_audio_created
+                    and transcription_audio_path
+                    and transcription_audio_path != audio_path
+                    and os.path.exists(transcription_audio_path)
+                ):
+                    os.remove(transcription_audio_path)
+                    log.info(f"Removed normalized transcription audio: {transcription_audio_path}")
 
         weekly_summary_attempted = True
         weekly_summary_result = maybe_run_weekly_summary(state, config, now=datetime.now())

@@ -1,0 +1,22 @@
+# Format:
+# Canonical Phrase | misspelling 1, misspelling 2
+# Phrase to delete |
+
+Michael Batnick | Michael Batnik
+Clients of Ritholtz Wealth Management | Fines of Red Holt's Wealth Management
+Ritholtz Wealth Management | Redholtz Wealth Management
+Ritholtz | Red Holtz
+Ritholtz Wealth Management | Redholz-Wealth Management
+Ritholtz Wealth Management | Rittlesworth Management
+Ritholtz Wealth Management | Red Holt's Wealth Management
+Barry Ritholtz | Barry Rittholz.
+Compound and Friends | Compound in Friends
+Email here at askthecompoundshow@gmail.com | Email here at thecompoundshow.gmail.com
+Email us at askthecompoundshow@gmail.com | Email us at thecompoundshow.gmail.com
+askthecompoundshow@gmail.com | thecompoundshow.gmail.com
+Calamos | Kalamaz
+teucrium.com | Tukrem.com
+Teucrium | Tokram, Tukrim
+See ya! |
+Scariness | scaryness
+Matt Kaufman | Matt Kaplan
